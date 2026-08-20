@@ -1,270 +1,269 @@
-"""
-report_summary.py
-- វេនព្រឹក (ម៉ោង < 12 PM): ផ្ញើតែ Site ដែលមិនទាន់ធ្វើ (Not yet do)
-- វេនល្ងាច (ម៉ោង >= 12 PM): ផ្ញើតារាងពេញ (Approved នៅលើគេ) + តារាង Overall Summary
-"""
-
+from datetime import datetime
 import os
-import time
-import json
-import random
-from datetime import datetime, timedelta
-from collections import defaultdict
-
-import pandas as pd
 import dataframe_image as dfi
-
-from telethon.sync import TelegramClient
+import pandas as pd
 from telethon.sessions import StringSession
+from telethon.sync import TelegramClient
 
-import gspread
-from google.oauth2.service_account import Credentials
-
-# ============================================================
-# CONFIG
-# ============================================================
-API_ID = int(os.environ["TELEGRAM_API_ID"])
-API_HASH = os.environ["TELEGRAM_API_HASH"]
-SESSION_STRING = os.environ["TELEGRAM_SESSION"]
-GOOGLE_CREDS_JSON = os.environ["GCP_SA_KEY"]
-
-REPORT_SPREADSHEET_ID = os.environ["REPORT_SPREADSHEET_ID"]
-REPORT_NOTIFY_GROUP_ID = os.environ["REPORT_NOTIFY_GROUP_ID"]
-
-SHEET_NAMES = [
-    "A1", "A2", "A4", "A5", "A6", "A7", "A8",
-    "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9",
-    "B11", "B12", "B13", "B14", "B16", "B17", "B18",
-    "C1", "C2", "C3", "C4", "C7", "C8", "C10",
-    "E1", "E2", "E3", "E4", "E5", "E6", "E13", "E15",
-]
-
-TARGET_TEAMS = ["CHA-T01", "CHA-T02", "CHA-T03", "CHA-T04", "CHA-T05", "CHA-T06", "CHA-T07"]
-
-
-def sleep_random_delay():
-    wait_time = random.randint(30, 60)
-    print(f"⏳ រង់ចាំ {wait_time} វិនាទី...")
-    time.sleep(wait_time)
-
-
-def load_sheet_groups(sh):
-    try:
-        ws = sh.worksheet("Team chat IDs")
-    except gspread.WorksheetNotFound:
-        return {}
-    mapping = {}
-    for row in ws.get_all_values()[1:]:
-        if len(row) > 3 and row[2].strip() and row[3].strip():
-            mapping[row[2].strip()] = row[3].strip()
-    return mapping
-
-
-def get_spreadsheet():
-    creds_dict = json.loads(GOOGLE_CREDS_JSON)
-    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    gc = gspread.authorize(creds)
-
-    last_error = None
-    for attempt in range(5):
-        try:
-            return gc.open_by_key(REPORT_SPREADSHEET_ID)
-        except gspread.exceptions.APIError as e:
-            last_error = e
-            wait_sec = 5 * (attempt + 1)
-            time.sleep(wait_sec)
-    raise last_error
+# ==========================================
+# 1. TASK MAPPING DICTIONARY
+# ==========================================
+TASK_NAMES = {
+    "A1": "Implement big plan maintenance and set parameter",
+    "A2": "Maintenance generator sos & test ATS",
+    "A5": "វាស់ម៉ាសដី",
+    "A6": "Maintenance air-conditioner",
+    "A7": "Test Battery BTS",
+    "A8": "Maintenance solar",
+    "B1": "Updating and standardizing data on PMCD 2.0",
+    "B2": "Solve Parameter wrong DC ZTE ZXDU68 V6.0",
+    "B3": "Install FAC 5G Ventilation Systems",
+    "B4": "DC Connect new on IMES system",
+    "B5": "Solve DC Cabinet Loss Data on IMES",
+    "B6": "Install Generator new IMES system",
+    (
+        "B7"
+    ): (
+        "Deployment of Replacement and Supplementary Works for Improvement"
+        " of Electromechanical Power System Stability in 2026"
+    ),
+    "B9": "Connect new power meter online IMES system",
+    "B11": "Swap Generator",
+    (
+        "B12"
+    ): (
+        "The optimal deployment of power systems for enclosed BTS stations"
+        " in 2021"
+    ),
+    "B13": "Check AC system of site has power consumption abnormal",
+    "B14": "Swap Cabinet for battery and DC mini outdoor",
+    "B16": "Swapbattery for site Mainnode",
+    "B17": "Connect battery online",
+    "B18": "Swap battery Shoto 100Ah",
+    "C1": "Survey power system for upgrade cell and New site.",
+    "C2": "Solve DAQ, battery and Generator offline",
+    "C3": "Report.Branch check online DAQ &Cabinet ZTE on-air new site",
+    "C4": "Check SRT have backup power less than 2h",
+    (
+        "C7"
+    ): (
+        "Report MFl all failed generators in all branches need to recall to"
+        " stock"
+    ),
+    "C8": "Repair generator (at branch)",
+    "E1": "Check operation of site Main Node",
+    "E2": "Check status operation ATS (Test ATS)",
+    "E3": "Check status operaion new Solar",
+    "E4": "Replace and instyall ATS",
+    "E5": "DC monitoring connection for a remote station via media converter",
+}
 
 
-def find_header_row(values):
-    for i, row in enumerate(values[:10]):
-        if "Team" in row and "Result" in row:
-            return i
-    return None
+# ==========================================
+# 2. STYLING FUNCTIONS
+# ==========================================
+def style_detail_table(df, title):
+  return df.style.set_caption(title).set_table_styles([
+      {
+          "selector": "caption",
+          "props": [
+              ("caption-side", "top"),
+              ("font-size", "18px"),
+              ("font-weight", "bold"),
+              ("text-align", "center"),
+              ("background-color", "#369388"),
+              ("color", "black"),
+              ("padding", "8px"),
+              ("border", "1px solid black"),
+          ],
+      },
+      {
+          "selector": "th",
+          "props": [
+              ("background-color", "#369388"),
+              ("color", "black"),
+              ("font-weight", "normal"),
+              ("text-align", "center"),
+              ("border", "1px solid black"),
+              ("padding", "6px"),
+          ],
+      },
+      {
+          "selector": "td",
+          "props": [
+              ("text-align", "center"),
+              ("border", "1px solid black"),
+              ("padding", "5px"),
+          ],
+      },
+  ])
 
 
-def parse_sheet_data(values, header_idx):
-    header = values[header_idx]
-    team_col = header.index("Team")
-    result_col = header.index("Result")
-    site_col = header.index("Site name") if "Site name" in header else None
-    remark_col = header.index("Remark") if "Remark" in header else None
-    qty_col = header.index("Q'ty task/site") if "Q'ty task/site" in header else None
+def style_summary_table(df, title):
+  styler = df.style.set_caption(title).set_table_styles([
+      {
+          "selector": "caption",
+          "props": [
+              ("caption-side", "top"),
+              ("font-size", "18px"),
+              ("font-weight", "bold"),
+              ("text-align", "center"),
+              ("background-color", "#369388"),
+              ("color", "black"),
+              ("padding", "8px"),
+              ("border", "1px solid black"),
+          ],
+      },
+      {
+          "selector": "th",
+          "props": [
+              ("background-color", "#369388"),
+              ("color", "black"),
+              ("font-weight", "normal"),
+              ("text-align", "center"),
+              ("border", "1px solid black"),
+              ("padding", "6px"),
+          ],
+      },
+      {
+          "selector": "td",
+          "props": [
+              ("text-align", "center"),
+              ("border", "1px solid black"),
+              ("padding", "5px"),
+          ],
+      },
+  ])
 
-    parsed = defaultdict(list)
+  def apply_row_styles(row):
+    styles = [""] * len(row)
+    if row.name == 0:
+      return [
+          "color: red; font-style: italic; font-weight: bold;" for _ in row
+      ]
 
-    for row in values[header_idx + 1:]:
-        if len(row) <= max(team_col, result_col):
-            continue
-        team = row[team_col].strip()
-        if not team:
-            continue
+    styles[0] = "background-color: #F2F2F2;"
+    styles[1] = "background-color: #F2F2F2;"
+    styles[5] = (
+        "background-color: #A2D9CE; font-weight: bold; font-style: italic;"
+    )
+    return styles
 
-        result = row[result_col].strip() or "Not yet do"
-        site = row[site_col].strip() if site_col is not None and len(row) > site_col else ""
-        remark = row[remark_col].strip() if remark_col is not None and len(row) > remark_col else ""
-        qty = row[qty_col].strip() if qty_col is not None and len(row) > qty_col else ""
-
-        parsed[team].append({
-            "No.": 1,
-            "Group task": "",
-            "Branch": "CHA",
-            "Site name": site,
-            "Q'ty task/site": qty,
-            "Result": result,
-            "Remark": remark,
-            "Team": team
-        })
-
-    return parsed
-
-
-def generate_team_image(rows_data, sheet_name, is_morning, filename="team_table.png"):
-    """បង្កើតរូបភាពតារាង"""
-    df = pd.DataFrame(rows_data)
-    df['Group task'] = sheet_name
-
-    if is_morning:
-        # វេនព្រឹក៖ ចែកតម្រងយកតែ Site ដែលមិនទាន់ធ្វើ (Not yet do)
-        df = df[df['Result'].isin(['Not yet do', '-', ''])]
-        if df.empty:
-            return None
-    else:
-        # វេនល្ងាច៖ តម្រៀប 'Approved' នៅលើគេ
-        df['sort_order'] = df['Result'].apply(lambda x: 0 if x == 'Approved' else (1 if x == 'Not Approved' else 2))
-        df = df.sort_values(by=['sort_order', 'Site name']).drop(columns=['sort_order'])
-
-    df['No.'] = range(1, len(df) + 1)
-
-    styled = df.style.set_table_styles([
-        {'selector': 'th', 'props': [('background-color', '#1b8a43'), ('color', 'white'), ('font-weight', 'bold'), ('text-align', 'center'), ('border', '1px solid black')]},
-        {'selector': 'td', 'props': [('text-align', 'center'), ('border', '1px solid black'), ('font-size', '12pt')]}
-    ]).hide(axis='index')
-
-    dfi.export(styled, filename, table_conversion='chrome')
-    return filename
+  return styler.apply(apply_row_styles, axis=1)
 
 
-def generate_overall_summary_image(overall_summary, filename="summary_table.png"):
-    """បង្កើតរូបភាពតារាងសរុបរួម (សម្រាប់តែវេនល្ងាច)"""
-    summary_rows = []
-    total_target, total_app, total_not_app, total_remain = 0, 0, 0, 0
-
-    for idx, team in enumerate(TARGET_TEAMS, 1):
-        data_list = overall_summary[team]
-        app = sum(1 for x in data_list if x['Result'] == "Approved")
-        not_app = sum(1 for x in data_list if x['Result'] == "Not Approved")
-        remain = sum(1 for x in data_list if x['Result'] != "Approved")
-        target = len(data_list)
-        pct = f"{round((app / target * 100))}%" if target > 0 else "0%"
-
-        total_target += target
-        total_app += app
-        total_not_app += not_app
-        total_remain += remain
-
-        summary_rows.append({
-            "No": idx,
-            "Branch": team,
-            "Target Site": target,
-            "Approved": app,
-            "Not Approved": not_app,
-            "%": pct,
-            "Remain": remain
-        })
-
-    overall_pct = f"{round((total_app / total_target * 100))}%" if total_target > 0 else "0%"
-    summary_rows.append({
-        "No": "",
-        "Branch": "TOTAL",
-        "Target Site": total_target,
-        "Approved": total_app,
-        "Not Approved": total_not_app,
-        "%": overall_pct,
-        "Remain": total_remain
-    })
-
-    df = pd.DataFrame(summary_rows)
-
-    styled = df.style.set_table_styles([
-        {'selector': 'th', 'props': [('background-color', '#2d9378'), ('color', 'white'), ('font-weight', 'bold'), ('text-align', 'center'), ('border', '1px solid black')]},
-        {'selector': 'td', 'props': [('text-align', 'center'), ('border', '1px solid black'), ('font-size', '12pt')]}
-    ]).hide(axis='index')
-
-    dfi.export(styled, filename, table_conversion='chrome')
-    return filename
-
-
+# ==========================================
+# 3. MAIN EXECUTION
+# ==========================================
 def main():
-    sh = get_spreadsheet()
-    sheet_groups = load_sheet_groups(sh)
-    
-    # ពិនិត្យមើលម៉ោងកម្ពុជា (UTC+7)
-    now_ict = datetime.utcnow() + timedelta(hours=7)
-    today = now_ict.strftime("%d/%b/%Y")
-    
-    # បើម៉ោងតិចជាង ១២ ថ្ងៃត្រង់ ចាត់ទុកជា "វេនព្រឹក"
-    is_morning = now_ict.hour < 12
-    shift_title = "🌅 ផែនការការងារត្រូវអនុវត្ត (Morning Plan)" if is_morning else "🟢 របាយការណ៍លទ្ធផលការងារ (Evening Progress)"
+  # ទាញយកទិន្នន័យពី Google Sheet
+  raw_data = []  # ជំនួសដោយ Data ពី Google Sheet របស់អ្នក
+  df = pd.DataFrame(raw_data)
 
-    overall_summary = defaultdict(list)
+  df_cha = df[df["Branch"] == "CHA"].copy()
 
-    with TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH) as client:
-        client.get_dialogs()
+  now = datetime.now()
+  is_morning = now.hour < 12
 
-        for sheet_name in SHEET_NAMES:
-            try:
-                ws = sh.worksheet(sheet_name)
-            except gspread.WorksheetNotFound:
-                continue
+  if is_morning:
+    df_detail = df_cha[df_cha["Result"] == "Not yet do"].copy()
+    shift_title = "Morning Shift"
+  else:
+    df_detail = df_cha.copy()
+    df_detail["sort_key"] = df_detail["Result"].apply(
+        lambda x: 0 if x == "Approved" else 1
+    )
+    df_detail = (
+        df_detail.sort_values(by="sort_key").drop(columns=["sort_key"]).copy()
+    )
+    shift_title = "Evening Shift"
 
-            values = ws.get_all_values()
-            header_idx = find_header_row(values)
-            if header_idx is None:
-                continue
+  df_detail["No."] = range(1, len(df_detail) + 1)
 
-            parsed_data = parse_sheet_data(values, header_idx)
-            if not parsed_data:
-                continue
+  group_task_code = "A6"
+  header_title_detail = TASK_NAMES.get(group_task_code, group_task_code)
+  styled_detail = style_detail_table(df_detail, header_title_detail)
 
-            raw_chat_id = sheet_groups.get(sheet_name, REPORT_NOTIFY_GROUP_ID)
-            chat_id = int(raw_chat_id)
+  detail_img_path = f"report_detail_{group_task_code}.png"
+  dfi.export(styled_detail.hide(axis="index"), detail_img_path)
 
-            for team in TARGET_TEAMS:
-                if team not in parsed_data:
-                    continue
+  summary_img_path = None
+  if not is_morning:
+    summary_header = f"Report Plan ELE M{now.month}"
+    valid_teams = [f"CHA-T0{i}" for i in range(1, 8)]
 
-                rows_data = parsed_data[team]
-                overall_summary[team].extend(rows_data)
+    rows = []
+    for idx, team in enumerate(valid_teams, start=1):
+      team_data = df_cha[
+          (df_cha["Team"] == team) & (df_cha["Group task"] == group_task_code)
+      ]
+      target = len(team_data)
+      approved = len(team_data[team_data["Result"] == "Approved"])
+      not_approved = target - approved
+      remain = not_approved
+      pct_val = (approved / target * 100) if target > 0 else 100.0
 
-                # បង្កើតរូបភាពតារាង
-                img_path = generate_team_image(rows_data, sheet_name, is_morning)
-                
-                # បើវេនព្រឹកគ្មាន Site ដែល Not yet do ទេ វានឹងរំលងមិនផ្ញើ
-                if img_path is None:
-                    continue
+      rows.append({
+          "No": idx,
+          "Branch": team,
+          "Target Site": target,
+          "Approved": approved,
+          "Not Approved": not_approved,
+          "%": f"{int(pct_val)}%",
+          "Remain": remain,
+      })
 
-                caption = f"**{shift_title}**\n📍 Sheet: **{sheet_name}** | Team: **{team}** ({today})"
-                client.send_file(chat_id, img_path, caption=caption)
-                print(f"[{sheet_name}] Sent Image for {team}")
-                
-                if os.path.exists(img_path):
-                    os.remove(img_path)
+    tot_target = sum(r["Target Site"] for r in rows)
+    tot_app = sum(r["Approved"] for r in rows)
+    tot_not_app = sum(r["Not Approved"] for r in rows)
+    tot_remain = sum(r["Remain"] for r in rows)
+    tot_pct = (tot_app / tot_target * 100) if tot_target > 0 else 100.0
 
-                sleep_random_delay()
+    total_row = {
+        "No": "",
+        "Branch": "",
+        "Target Site": tot_target,
+        "Approved": tot_app,
+        "Not Approved": tot_not_app,
+        "%": f"{int(tot_pct)}%",
+        "Remain": tot_remain,
+    }
 
-        # ផ្ញើតារាង Overall Summary តែនៅ "វេនល្ងាច" ប៉ុណ្ណោះ
-        if not is_morning:
-            print("📊 កំពុងរៀបចំផ្ញើរូបភាពតារាងសរុបរួម (Evening Summary)...")
-            summary_img = generate_overall_summary_image(overall_summary)
-            master_chat_id = int(REPORT_NOTIFY_GROUP_ID)
-            client.send_file(master_chat_id, summary_img, caption=f"🏆 **Overall Summary Report - {today}**")
-            
-            if os.path.exists(summary_img):
-                os.remove(summary_img)
-            print("✅ ផ្ញើរូបភាពតារាងសរុបរួមបានជោគជ័យ!")
+    df_summary = pd.DataFrame([total_row] + rows)
+    df_summary.columns = pd.MultiIndex.from_tuples([
+        ("", "No"),
+        ("", "Branch"),
+        ("", "Target Site"),
+        ("Result", "Approved"),
+        ("Result", "Not Approved"),
+        ("", "%"),
+        ("", "Remain"),
+    ])
+
+    styled_summary = style_summary_table(df_summary, summary_header)
+    summary_img_path = "overall_summary_team.png"
+    dfi.export(styled_summary.hide(axis="index"), summary_img_path)
+
+  api_id = int(os.environ.get("TELEGRAM_API_ID"))
+  api_hash = os.environ.get("TELEGRAM_API_HASH")
+  session_str = os.environ.get("TELEGRAM_SESSION")
+  group_id = int(os.environ.get("REPORT_NOTIFY_GROUP_ID"))
+
+  caption_text = (
+      f"របាយការណ៍លទ្ធផលការងារ - Branch: CHA ({shift_title})\nTask:"
+      f" {header_title_detail}"
+  )
+
+  with TelegramClient(StringSession(session_str), api_id, api_hash) as client:
+    client.send_file(group_id, detail_img_path, caption=caption_text)
+
+    if summary_img_path and os.path.exists(summary_img_path):
+      client.send_file(
+          group_id,
+          summary_img_path,
+          caption="របាយការណ៍សរុប (Branch: CHA - Team T01 ដល់ T07)",
+      )
 
 
 if __name__ == "__main__":
-    main()
+  main()
