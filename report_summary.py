@@ -41,8 +41,7 @@ DELAY_BETWEEN_MESSAGES_SEC = 2  # ចន្លោះពេលរវាងសា�
 
 
 def load_sheet_groups(sh):
-    """អាន Sheet 'Team chat IDs' ជួរឈរ C (Sheet name) និង D (ChatID) - ត្រឡប់ dict: sheet_name -> chat_id
-    (ជួរឈរ A/B ប្រើសម្រាប់គោលបំណងផ្សេង - មិនប៉ះពាល់ទេ)"""
+    """អាន Sheet 'Team chat IDs' ជួរឈរ C (Sheet name) និង D (ChatID) - ត្រឡប់ dict: sheet_name -> chat_id"""
     try:
         ws = sh.worksheet("Team chat IDs")
     except gspread.WorksheetNotFound:
@@ -151,7 +150,9 @@ def main():
                 print(f"[{sheet_name}] គ្មានទិន្នន័យ - រំលង")
                 continue
 
-            chat_id = sheet_groups.get(sheet_name, REPORT_NOTIFY_GROUP_ID)
+            # 🔑 ប្លែង Chat ID ទៅជា integer ដើម្បីការពារ Error ស្គាល់ Chat ID មិនឃើញ
+            raw_chat_id = sheet_groups.get(sheet_name, REPORT_NOTIFY_GROUP_ID)
+            chat_id = int(raw_chat_id)
 
             for team in sorted(summary.keys()):
                 counts = summary[team]
@@ -170,5 +171,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
