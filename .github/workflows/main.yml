@@ -23,7 +23,8 @@ jobs:
 
       - name: Install dependencies
         run: pip install telethon gspread google-auth
-- name: Run report summary
+
+      - name: Run report summary
         run: python report_summary.py
         env:
           API_ID: ${{ secrets.TELEGRAM_API_ID }}
