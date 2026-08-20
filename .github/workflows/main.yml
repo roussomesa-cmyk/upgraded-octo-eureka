@@ -1,31 +1,32 @@
-name: Daily Report Summary
+name: Daily Report Automation
 
 on:
   schedule:
-    # ម៉ោង ១៧:00 (5 ល្ងាច) ម៉ោងកម្ពុជា (UTC+7) = 10:00 UTC
+    # ម៉ោង 7:30 AM កម្ពុជា (UTC 0:30 AM)
+    - cron: '30 0 * * *'
+    # ម៉ោង 5:00 PM កម្ពុជា (UTC 10:00 AM)
     - cron: '0 10 * * *'
-  workflow_dispatch: {}
-
-concurrency:
-  group: telegram-userbot   # ដូចគ្នានឹង check_sites.yml ដើម្បីកុំឲ្យរត់ព្រមគ្នាលើគណនី Telegram តែមួយ
-  cancel-in-progress: false
+  workflow_dispatch: # សម្រាប់ចុច Test ផ្ទាល់ដៃ
 
 jobs:
-  send-report:
+  run-report:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install telethon gspread google-auth
+        run: |
+          pip install telethon gspread google-auth pandas dataframe_image html2image
+          sudo apt-get update
+          sudo apt-get install -y chromium-browser
 
-      - name: Run report summary
-        run: python report_summary.py
+      - name: Run Report Script
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
@@ -33,3 +34,4 @@ jobs:
           GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
           REPORT_SPREADSHEET_ID: ${{ secrets.REPORT_SPREADSHEET_ID }}
           REPORT_NOTIFY_GROUP_ID: ${{ secrets.REPORT_NOTIFY_GROUP_ID }}
+        run: python report_summary.py
