@@ -23,13 +23,13 @@ jobs:
 
       - name: Install dependencies
         run: pip install telethon gspread google-auth
-
-      - name: Run report summary
+- name: Run report summary
         run: python report_summary.py
         env:
-          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
-          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
-          TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
+          API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          SESSION_STRING: ${{ secrets.TELEGRAM_SESSION }}
           GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
           REPORT_SPREADSHEET_ID: ${{ secrets.REPORT_SPREADSHEET_ID }}
-          REPORT_NOTIFY_GROUP_ID: ${{ secrets.REPORT_NOTIFY_GROUP_ID }}
+          REPORT_NOTIFY_GROUP_ID: ${
+      
