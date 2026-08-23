@@ -11,7 +11,7 @@ from telethon.sync import TelegramClient
 SPREADSHEET_ID = "1PmMSqfeBWhYJe5dMv3PrLOFKc2YmLYP8BdCvf9FyZX4"
 
 # -------------------------------------------------------------
-# កំណត់ចំណងជើងពេញលេញសម្រាប់ Task នីមួយៗ (A1 ដល់ C4)
+# កំណត់ចំណងជើងពេញលេញសម្រាប់ Task នីមួយៗ (Updated)
 # -------------------------------------------------------------
 TASK_NAMES = {
     "A1": "Implement big plan maintenance and set parameter",
@@ -21,13 +21,19 @@ TASK_NAMES = {
     "B1": "Updating and standardizing data on PMCD 2.0",
     "B2": "Solve Parameter wrong DC ZTE ZXDU68 V6.0",
     "B3": "Install ‎FAC 5G Ventilation Systems",
-    "B4": "DC Connect new on IMES system",  # ដាក់ចំណងជើងពេញលេញតាមការងារជាក់ស្តែង
+    "B4": "DC Connect new on IMES system",
     "B5": "Solve DC Cabinet Loss Data on IMES",
     "B6": "Install Generator new IMES system",
-    "B7": "Deployment of Replacement and Supplementary Works for Improvement of Electromechanical Power System Stability in 2026",
+    "B7": (
+        "Deployment of Replacement and Supplementary Works for Improvement of"
+        " Electromechanical Power System Stability in 2026"
+    ),
     "B9": "Connect new power meter online IMES system",
     "B11": "Swap new generator",
-    "B12": "The optimal deployment of power systems for enclosed BTS stations in 2021",
+    "B12": (
+        "The optimal deployment of power systems for enclosed BTS stations in"
+        " 2021"
+    ),
     "B13": "Check AC system of site has power consumption abnormal",
     "B14": "Swap Cabinet for battery and DC mini outdoor",
     "B17": "Connect battery online ",
@@ -198,14 +204,13 @@ def main():
     # ដំណើរការតាម Task Sheet នីមួយៗ
     # -------------------------------------------------------------
     for task_code, chat_id in task_chat_ids.items():
-      # យកឈ្មោះ Title ពេញលេញចេញពី TASK_NAMES
       task_title = TASK_NAMES.get(task_code, f"Task {task_code}")
       df_task = fetch_csv(task_code)
 
       if df_task is None or df_task.empty:
         continue
 
-      # A. បង្កើតតារាងលម្អិត Site រួចផ្ញើទៅ Task Group នីមួយៗ
+      # A. បង្កើត និង Filter តារាងលម្អិត Site (លុបជួរ nan និង #N/A)
       cols_to_show = [
           "No.",
           "Group task",
@@ -222,16 +227,52 @@ def main():
 
       if available_cols:
         df_detail = df_task[available_cols].copy()
-        styled_detail = style_detail_table(df_detail, task_title)
-        img_detail_path = f"detail_{task_code}.png"
-        dfi.export(styled_detail.hide(axis="index"), img_detail_path)
 
-        # ផ្ញើរូបភាពតារាងលម្អិតទៅ Task Group
-        client.send_file(
-            chat_id,
-            img_detail_path,
-            caption=f"តារាងការងារលម្អិត {task_title} ({shift_title})",
+        # ១. Filter លុបជួរដែលគ្មានទិន្នន័យ (លុបជួរដែល Group task ឬ Site name ឬ Team ទទេ/nan/#N/A)
+        if "Group task" in df_detail.columns:
+          df_detail = df_detail[
+              df_detail["Group task"].notna()
+              & (
+                  ~df_detail["Group task"]
+                  .astype(str)
+                  .str.strip()
+                  .str.lower()
+                  .isin(["", "nan", "none", "#n/a", "n/a"])
+              )
+          ]
+
+        if "Site name" in df_detail.columns:
+          df_detail = df_detail[
+              df_detail["Site name"].notna()
+              & (
+                  ~df_detail["Site name"]
+                  .astype(str)
+                  .str.strip()
+                  .str.lower()
+                  .isin(["", "nan", "none", "#n/a", "n/a"])
+              )
+          ]
+
+        # ២. ជំនួស Cell ទទេ ឬ 'nan' ក្នុង Column ផ្សេងទៀតឱ្យទៅជា Blank ""
+        df_detail = df_detail.fillna("")
+        df_detail = df_detail.replace(
+            to_replace=r"^(?i:nan|none|#n/a|n/a)$", value="", regex=True
         )
+
+        # ប្រសិនបើនៅសល់ទិន្នន័យ ទើបបង្កើតរូបភាព និងផ្ញើទៅ Task Group
+        if not df_detail.empty:
+          styled_detail = style_detail_table(df_detail, task_title)
+          img_detail_path = f"detail_{task_code}.png"
+
+          dfi.export(
+              styled_detail.hide(axis="index"), img_detail_path, max_rows=-1
+          )
+
+          client.send_file(
+              chat_id,
+              img_detail_path,
+              caption=f"តារាងការងារលម្អិត {task_title} ({shift_title})",
+          )
 
       # B. គណនា Summary សម្រាប់ Task នោះ រួចផ្ញើទៅ MAIN GROUP
       rows = []
@@ -315,7 +356,9 @@ def main():
 
       styled_summary = style_task_summary(df_summary, task_title)
       img_summary_path = f"summary_{task_code}.png"
-      dfi.export(styled_summary.hide(axis="index"), img_summary_path)
+      dfi.export(
+          styled_summary.hide(axis="index"), img_summary_path, max_rows=-1
+      )
 
       # ផ្ញើតារាង Task Summary ទៅ MAIN GROUP
       client.send_file(
@@ -372,7 +415,7 @@ def main():
     styled_overall = style_overall_summary(df_overall, title_3)
 
     img_overall_path = "overall_report.png"
-    dfi.export(styled_overall.hide(axis="index"), img_overall_path)
+    dfi.export(styled_overall.hide(axis="index"), img_overall_path, max_rows=-1)
 
     # ផ្ញើតារាងសរុបរួមទៅ Main Group
     client.send_file(
