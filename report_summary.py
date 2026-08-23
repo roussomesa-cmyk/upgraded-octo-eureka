@@ -150,13 +150,13 @@ def main():
   # ទាញយក Mapping ពី Google Sheet
   df_raw = pd.read_csv(SHEET_CSV_URL)
 
-  # ១. Map Chat ID របស់ Team នីមួយៗ (ពី Column A & B)
+  # ១. Map Chat ID របស់ Team នីមួយៗ (ពី Column C & D)
   team_chat_ids = {}
-  for _, row in df_raw.dropna(subset=["Column A", "Column B"]).iterrows():
+  for _, row in df_raw.dropna(subset=["Column C", "Column D"]).iterrows():
     team_name = (
-        str(row["Column A"]).strip().replace("_TEAM0", "-T0").replace("_TEAM", "-T")
+        str(row["Column C"]).strip().replace("_TEAM0", "-T0").replace("_TEAM", "-T")
     )
-    team_chat_ids[team_name] = int(row["Column B"])
+    team_chat_ids[team_name] = int(row["Column D"])
 
   # ២. Map Chat ID របស់ Task/Sheet នីមួយៗ (ពី Column Sheet & ChatID)
   task_chat_ids = {}
