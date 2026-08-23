@@ -8,21 +8,32 @@ from telethon.sync import TelegramClient
 # ==========================================
 # 1. Google Sheet & Task Mapping
 # ==========================================
-# Link CSV នៃ Google Sheet របស់អ្នក
+# Link CSV នៃ Google Sheet (Tab: Team chat IDs)
 SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1PmMSqfeBWhYJe5dMv3PrLOFKc2YmLYP8BdCvf9FyZX4/export?format=csv&gid=0"
 
-# ឈ្មោះ Task តាមកូដ A1, A2, B4, B5 ...
+# ឈ្មោះ Task តាមកូដក្នុង Column C (Sheet)
 TASK_NAMES = {
     "A1": "Implement big plan maintenance and set parameter",
     "A2": "Maintenance generator sos & test ATS",
     "A6": "Maintenance air-conditioner",
     "A7": "Test Battery BTS",
+    "B1": "Plan Maintenance B1",
+    "B2": "Plan Maintenance B2",
+    "B3": "Plan Maintenance B3",
     "B4": "Plan Maintenance B4",
     "B5": "Plan Maintenance B5",
+    "B6": "Plan Maintenance B6",
+    "B7": "Plan Maintenance B7",
     "B9": "Connect new power meter online IMES system",
+    "B11": "Plan Maintenance B11",
+    "B12": "Plan Maintenance B12",
+    "B14": "Plan Maintenance B14",
+    "B17": "Plan Maintenance B17",
+    "C1": "Plan Maintenance C1",
+    "C4": "Plan Maintenance C4",
 }
 
-# MAIN GROUP (CHA_Power Dept.) សម្រាប់ផ្ញើតារាង Overall Summary
+# MAIN GROUP (CHA_Power Dept.) សម្រាប់ផ្ញើតារាង Overall Summary (ប្រភេទទី៣)
 MAIN_GROUP_ID = -1001853372580
 
 # ==========================================
@@ -42,32 +53,6 @@ COMMON_CAPTION_STYLE = {
         ("font-family", "serif"),
     ],
 }
-
-
-def style_detail_image1(df, title):
-  """Style ប្រភេទទី១ (Detail Table)"""
-  return df.style.set_caption(title).set_table_styles([
-      COMMON_CAPTION_STYLE,
-      {
-          "selector": "th",
-          "props": [
-              ("background-color", "#1E8449"),
-              ("color", "white"),
-              ("font-weight", "bold"),
-              ("text-align", "center"),
-              ("border", "1px solid black"),
-              ("padding", "6px"),
-          ],
-      },
-      {
-          "selector": "td",
-          "props": [
-              ("text-align", "center"),
-              ("border", "1px solid black"),
-              ("padding", "5px"),
-          ],
-      },
-  ])
 
 
 def style_task_summary_image2(df, title):
@@ -146,22 +131,20 @@ def style_overall_image3(df, title):
 # 3. MAIN EXECUTION
 # ==========================================
 def main():
-  # ទាញយក Mapping ពី Google Sheet
-  df_raw = pd.read_csv(SHEET_CSV_URL)
+  # ទាញយកទិន្នន័យពី Sheet
+  df_sheet_ids = pd.read_csv(SHEET_CSV_URL)
 
-  # ១. Map Chat ID របស់ Team នីមួយៗ (ពី Column A & B)
-  team_chat_ids = {}
-  for _, row in df_raw.dropna(subset=["Column A", "Column B"]).iterrows():
-    team_name = (
-        str(row["Column A"]).strip().replace("_TEAM0", "-T0").replace("_TEAM", "-T")
-    )
-    team_chat_ids[team_name] = int(row["Column B"])
-
-  # ២. Map Chat ID របស់ Task/Sheet នីមួយៗ (ពី Column Sheet & ChatID)
+  # ទាញយកតែ Column C (Sheet) និង Column D (ChatID) ប៉ុណ្ណោះ
   task_chat_ids = {}
-  for _, row in df_raw.dropna(subset=["Sheet", "ChatID"]).iterrows():
+  df_clean = df_sheet_ids.dropna(subset=["Sheet", "ChatID"])
+
+  for _, row in df_clean.iterrows():
     sheet_code = str(row["Sheet"]).strip()
-    task_chat_ids[sheet_code] = int(row["ChatID"])
+    try:
+      chat_id = int(float(str(row["ChatID"]).strip()))
+      task_chat_ids[sheet_code] = chat_id
+    except ValueError:
+      continue
 
   now = datetime.now()
   shift_title = "Morning Shift" if now.hour < 12 else "Evening Shift"
@@ -174,36 +157,7 @@ def main():
   with TelegramClient(StringSession(session_str), api_id, api_hash) as client:
 
     # -------------------------------------------------------------
-    # ប្រភេទទី១ ៖ ផ្ញើទៅ Team Group នីមួយៗ (តាម Chat ID ក្នុង Column B)
-    # -------------------------------------------------------------
-    for team_code in valid_teams:
-      df_team = (
-          df_raw[df_raw["Team"] == team_code].copy()
-          if "Team" in df_raw.columns
-          else pd.DataFrame()
-      )
-      target_chat_id = team_chat_ids.get(team_code)
-
-      if not df_team.empty and target_chat_id:
-        first_task = (
-            df_team["Group task"].iloc[0]
-            if "Group task" in df_team.columns
-            else "A1"
-        )
-        title_1 = TASK_NAMES.get(first_task, f"Task {first_task}")
-
-        styled_1 = style_detail_image1(df_team, title_1)
-        img_path = f"team_{team_code}.png"
-        dfi.export(styled_1.hide(axis="index"), img_path)
-
-        client.send_file(
-            target_chat_id,
-            img_path,
-            caption=f"របាយការណ៍ {team_code} - {shift_title}",
-        )
-
-    # -------------------------------------------------------------
-    # ប្រភេទទី២ ៖ ផ្ញើទៅ Task Group នីមួយៗ (តាម Chat ID ក្នុង Column D)
+    # ប្រភេទទី២ ៖ ផ្ញើទៅ Task Group នីមួយៗ (ទាញតាម Column C & Col D)
     # -------------------------------------------------------------
     for task_code, chat_id in task_chat_ids.items():
       task_title = TASK_NAMES.get(task_code, f"Task {task_code}")
