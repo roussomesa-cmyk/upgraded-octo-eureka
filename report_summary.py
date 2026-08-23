@@ -10,26 +10,31 @@ from telethon.sync import TelegramClient
 # Sheet ID
 SPREADSHEET_ID = "1PmMSqfeBWhYJe5dMv3PrLOFKc2YmLYP8BdCvf9FyZX4"
 
-# ឈ្មោះ Task តាម Sheet Code
+# -------------------------------------------------------------
+# កំណត់ចំណងជើងពេញលេញសម្រាប់ Task នីមួយៗ (A1 ដល់ C4)
+# -------------------------------------------------------------
 TASK_NAMES = {
     "A1": "Implement big plan maintenance and set parameter",
     "A2": "Maintenance generator sos & test ATS",
     "A6": "Maintenance air-conditioner",
     "A7": "Test Battery BTS",
-    "B1": "Plan Maintenance B1",
-    "B2": "Plan Maintenance B2",
-    "B3": "Plan Maintenance B3",
-    "B4": "Plan Maintenance B4",
-    "B5": "Plan Maintenance B5",
-    "B6": "Plan Maintenance B6",
-    "B7": "Plan Maintenance B7",
+    "B1": "Updating and standardizing data on PMCD 2.0",
+    "B2": "Solve Parameter wrong DC ZTE ZXDU68 V6.0",
+    "B3": "Install ‎FAC 5G Ventilation Systems",
+    "B4": "DC Connect new on IMES system",  # ដាក់ចំណងជើងពេញលេញតាមការងារជាក់ស្តែង
+    "B5": "Solve DC Cabinet Loss Data on IMES",
+    "B6": "Install Generator new IMES system",
+    "B7": "Deployment of Replacement and Supplementary Works for Improvement of Electromechanical Power System Stability in 2026",
     "B9": "Connect new power meter online IMES system",
-    "B11": "Plan Maintenance B11",
-    "B12": "Plan Maintenance B12",
-    "B14": "Plan Maintenance B14",
-    "B17": "Plan Maintenance B17",
-    "C1": "Plan Maintenance C1",
-    "C4": "Plan Maintenance C4",
+    "B11": "Swap new generator",
+    "B12": "The optimal deployment of power systems for enclosed BTS stations in 2021",
+    "B13": "Check AC system of site has power consumption abnormal",
+    "B14": "Swap Cabinet for battery and DC mini outdoor",
+    "B17": "Connect battery online ",
+    "C1": "Survey power system for upgrade cell and New site.C1",
+    "C2": "Solve DAQ, battery and Generator offline",
+    "C3": "Report.Branch check online DAQ &Cabinet ZTE on-air new site",
+    "C4": "Check SRT have backup power less than 2h",
 }
 
 # Main Group (CHA_Power Dept.)
@@ -53,6 +58,7 @@ COMMON_CAPTION_STYLE = {
 
 
 def fetch_csv(sheet_name_or_gid):
+  """ទាញយក CSV តាមឈ្មោះ Sheet"""
   url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name_or_gid}"
   headers = {"User-Agent": "Mozilla/5.0"}
   res = requests.get(url, headers=headers)
@@ -61,7 +67,35 @@ def fetch_csv(sheet_name_or_gid):
   return None
 
 
-def style_task_summary_image2(df, title):
+def style_detail_table(df, title):
+  """Style សម្រាប់តារាងលម្អិត Site (ផ្ញើទៅ Task Group នីមួយៗ)"""
+  styler = df.style.set_caption(title).set_table_styles([
+      COMMON_CAPTION_STYLE,
+      {
+          "selector": "th",
+          "props": [
+              ("background-color", "#369388"),
+              ("color", "black"),
+              ("font-weight", "bold"),
+              ("text-align", "center"),
+              ("border", "1px solid black"),
+              ("padding", "6px"),
+          ],
+      },
+      {
+          "selector": "td",
+          "props": [
+              ("text-align", "center"),
+              ("border", "1px solid black"),
+              ("padding", "5px"),
+          ],
+      },
+  ])
+  return styler
+
+
+def style_task_summary(df, title):
+  """Style សម្រាប់ Task Summary Table (ផ្ញើទៅ Main Group)"""
   styler = df.style.set_caption(title).set_table_styles([
       COMMON_CAPTION_STYLE,
       {
@@ -86,7 +120,7 @@ def style_task_summary_image2(df, title):
   ])
 
   def apply_row_styles(row):
-    if row.name == 0:
+    if row.name == 0:  # Row សរុប
       return [
           "color: red; font-style: italic; font-weight: bold;" for _ in row
       ]
@@ -99,7 +133,8 @@ def style_task_summary_image2(df, title):
   return styler.apply(apply_row_styles, axis=1)
 
 
-def style_overall_image3(df, title):
+def style_overall_summary(df, title):
+  """Style សម្រាប់ Overall Summary Table (ផ្ញើទៅ Main Group)"""
   styler = df.style.set_caption(title).set_table_styles([
       COMMON_CAPTION_STYLE,
       {
@@ -160,23 +195,52 @@ def main():
   with TelegramClient(StringSession(session_str), api_id, api_hash) as client:
 
     # -------------------------------------------------------------
-    # ១. គណនា និងផ្ញើតារាង Task នីមួយៗ (រូបទី១)
+    # ដំណើរការតាម Task Sheet នីមួយៗ
     # -------------------------------------------------------------
     for task_code, chat_id in task_chat_ids.items():
+      # យកឈ្មោះ Title ពេញលេញចេញពី TASK_NAMES
       task_title = TASK_NAMES.get(task_code, f"Task {task_code}")
       df_task = fetch_csv(task_code)
 
+      if df_task is None or df_task.empty:
+        continue
+
+      # A. បង្កើតតារាងលម្អិត Site រួចផ្ញើទៅ Task Group នីមួយៗ
+      cols_to_show = [
+          "No.",
+          "Group task",
+          "Branch",
+          "Site name",
+          "Q'ty task/Local task",
+          "Result",
+          "Remark",
+          "Last date record",
+          "History Task",
+          "Team",
+      ]
+      available_cols = [c for c in cols_to_show if c in df_task.columns]
+
+      if available_cols:
+        df_detail = df_task[available_cols].copy()
+        styled_detail = style_detail_table(df_detail, task_title)
+        img_detail_path = f"detail_{task_code}.png"
+        dfi.export(styled_detail.hide(axis="index"), img_detail_path)
+
+        # ផ្ញើរូបភាពតារាងលម្អិតទៅ Task Group
+        client.send_file(
+            chat_id,
+            img_detail_path,
+            caption=f"តារាងការងារលម្អិត {task_title} ({shift_title})",
+        )
+
+      # B. គណនា Summary សម្រាប់ Task នោះ រួចផ្ញើទៅ MAIN GROUP
       rows = []
       tot_target = tot_approved = tot_not_approved = tot_remain = 0
 
       for idx, team in enumerate(VALID_TEAMS, start=1):
         target_site = approved = not_approved = 0
 
-        if (
-            df_task is not None
-            and "Team" in df_task.columns
-            and "Result" in df_task.columns
-        ):
+        if "Team" in df_task.columns and "Result" in df_task.columns:
           df_team = df_task[
               df_task["Team"].astype(str).str.strip() == team
           ].copy()
@@ -249,27 +313,19 @@ def main():
           ("", "Remark"),
       ])
 
-      styled_2 = style_task_summary_image2(df_summary, task_title)
-      img_path_2 = f"task_{task_code}.png"
-      dfi.export(styled_2.hide(axis="index"), img_path_2)
+      styled_summary = style_task_summary(df_summary, task_title)
+      img_summary_path = f"summary_{task_code}.png"
+      dfi.export(styled_summary.hide(axis="index"), img_summary_path)
 
-      # ផ្ញើទៅ Task Group (តាម ChatID ក្នុង Col D)
+      # ផ្ញើតារាង Task Summary ទៅ MAIN GROUP
       client.send_file(
-          chat_id,
-          img_path_2,
-          caption=f"របាយការណ៍ Task {task_code} ({shift_title})",
+          MAIN_GROUP_ID,
+          img_summary_path,
+          caption=f"របាយការណ៍សង្ខេប {task_title} ({shift_title})",
       )
 
-      # ផ្ញើទៅ MAIN GROUP ផងដែរ!
-      if chat_id != MAIN_GROUP_ID:
-        client.send_file(
-            MAIN_GROUP_ID,
-            img_path_2,
-            caption=f"របាយការណ៍ Task {task_code} ({shift_title})",
-        )
-
     # -------------------------------------------------------------
-    # ២. ផ្ញើតារាង Overall Summary (រូបទី២) ទៅ MAIN GROUP
+    # ផ្ញើតារាង Overall Summary ទៅ MAIN GROUP
     # -------------------------------------------------------------
     title_3 = f"Report Plan Power M{now.month}"
     overall_rows = []
@@ -313,15 +369,15 @@ def main():
     })
 
     df_overall = pd.DataFrame(overall_rows)
-    styled_3 = style_overall_image3(df_overall, title_3)
+    styled_overall = style_overall_summary(df_overall, title_3)
 
-    img_path_3 = "overall_report.png"
-    dfi.export(styled_3.hide(axis="index"), img_path_3)
+    img_overall_path = "overall_report.png"
+    dfi.export(styled_overall.hide(axis="index"), img_overall_path)
 
     # ផ្ញើតារាងសរុបរួមទៅ Main Group
     client.send_file(
         MAIN_GROUP_ID,
-        img_path_3,
+        img_overall_path,
         caption=f"របាយការណ៍សរុបរួម {title_3} - {shift_title}",
     )
 
