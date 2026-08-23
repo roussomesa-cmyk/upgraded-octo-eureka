@@ -18,12 +18,12 @@ TASK_NAMES = {
     "A2": "A2.Maintenance generator sos & test ATS",
     "A6": "A6.Maintenance air-conditioner",
     "A7": "A7.Test Battery BTS",
-    "B1": "B1.Updating and standardizing data on PMCD 2.0",
+    "B1": "B1.Updating and standardizing data on PMCD 2.0(update Vsmart)",
     "B2": "B2.Solve Parameter wrong DC ZTE ZXDU68 V6.0",
     "B3": "B3.Install ‎FAC 5G Ventilation Systems",
     "B4": "B4.DC Connect new on IMES system",
     "B5": "B5.Solve DC Cabinet Loss Data on IMES",
-    "B6": "B6.Install Generator new IMES system",
+    "B6": "b6.Install Generator new IMES system",
     "B7": (
         "B7.Deployment of Replacement and Supplementary Works for Improvement of"
         " Electromechanical Power System Stability in 2026"
@@ -74,7 +74,7 @@ def fetch_csv(sheet_name_or_gid):
 
 
 def style_detail_table(df, title):
-  """Style សម្រាប់តារាងលម្អិត Site (ផ្ញើទៅ Task Group នីមួយៗ)"""
+  """Style សម្រាប់តារាងលម្អិត Site"""
   styler = df.style.set_caption(title).set_table_styles([
       COMMON_CAPTION_STYLE,
       {
@@ -144,6 +144,19 @@ def style_overall_summary(df, title):
   styler = df.style.set_caption(title).set_table_styles([
       COMMON_CAPTION_STYLE,
       {
+          "selector": "caption",
+          "props": [
+              ("caption-side", "top"),
+              ("font-size", "22px"),
+              ("font-weight", "bold"),
+              ("text-align", "center"),
+              ("background-color", "#2EA44E"),
+              ("color", "white"),
+              ("padding", "10px"),
+              ("border", "1px solid black"),
+          ],
+      },
+      {
           "selector": "th",
           "props": [
               ("background-color", "#2EA44E"),
@@ -173,7 +186,6 @@ def style_overall_summary(df, title):
 
 
 def main():
-  # ១. អាន Mapping ChatID ពី Sheet "Team chat IDs"
   df_mapping = fetch_csv("Team%20chat%20IDs")
   task_chat_ids = {}
 
@@ -200,9 +212,6 @@ def main():
 
   with TelegramClient(StringSession(session_str), api_id, api_hash) as client:
 
-    # -------------------------------------------------------------
-    # ដំណើរការតាម Task Sheet នីមួយៗ
-    # -------------------------------------------------------------
     for task_code, chat_id in task_chat_ids.items():
       task_title = TASK_NAMES.get(task_code, f"Task {task_code}")
       df_task = fetch_csv(task_code)
@@ -210,7 +219,9 @@ def main():
       if df_task is None or df_task.empty:
         continue
 
-      # A. បង្កើត និង Filter តារាងលម្អិត Site (តម្រៀបតាម Team CHA-T01 -> CHA-T07)
+      # -------------------------------------------------------------
+      # A. បំបែកទិន្នន័យ និងផ្ញើ ១ រូបភាព សម្រាប់ ១ Team (CHA-T01 ដល់ CHA-T07)
+      # -------------------------------------------------------------
       cols_to_show = [
           "No.",
           "Group task",
@@ -225,10 +236,10 @@ def main():
       ]
       available_cols = [c for c in cols_to_show if c in df_task.columns]
 
-      if available_cols:
+      if available_cols and "Team" in df_task.columns:
         df_detail = df_task[available_cols].copy()
 
-        # ១. Filter លុបជួរដែលគ្មានទិន្នន័យ (Group task, Site name, Team ទទេ/nan/#N/A)
+        # Filter លុបជួរដែលគ្មានទិន្នន័យ (Group task, Site name, Team ទទេ/nan/#N/A)
         if "Group task" in df_detail.columns:
           df_detail = df_detail[
               df_detail["Group task"].notna()
@@ -253,32 +264,40 @@ def main():
               )
           ]
 
-        # ២. តម្រៀបទិន្នន័យជួរតាម Team (CHA-T01 ដល់ CHA-T07)
-        if "Team" in df_detail.columns:
-          df_detail = df_detail.sort_values(by="Team", ascending=True)
-
-        # ៣. ជំនួស Cell ទទេ ឬ 'nan' ឱ្យទៅជា Blank ""
         df_detail = df_detail.fillna("")
         df_detail = df_detail.replace(
             to_replace=r"^(?i:nan|none|#n/a|n/a)$", value="", regex=True
         )
 
-        # ប្រសិនបើនៅសល់ទិន្នន័យ ទើបបង្កើតរូបភាព និងផ្ញើទៅ Task Group
-        if not df_detail.empty:
-          styled_detail = style_detail_table(df_detail, task_title)
-          img_detail_path = f"detail_{task_code}.png"
+        # Loop បង្កើតរូបភាព ផ្ញើម្តង ១ Team
+        for team in VALID_TEAMS:
+          df_single_team = df_detail[
+              df_detail["Team"].astype(str).str.strip() == team
+          ].copy()
 
-          dfi.export(
-              styled_detail.hide(axis="index"), img_detail_path, max_rows=-1
-          )
+          # បើ Team នោះមានទិន្នន័យ ទើប export ជា picture ហើយផ្ញើ
+          if not df_single_team.empty:
+            styled_detail = style_detail_table(
+                df_single_team, f"{task_title} ({team})"
+            )
+            img_detail_path = f"detail_{task_code}_{team}.png"
 
-          client.send_file(
-              chat_id,
-              img_detail_path,
-              caption=f"តារាងការងារលម្អិត {task_title} ({shift_title})",
-          )
+            dfi.export(
+                styled_detail.hide(axis="index"), img_detail_path, max_rows=-1
+            )
 
-      # B. គណនា Summary សម្រាប់ Task នោះ រួចផ្ញើទៅ MAIN GROUP
+            client.send_file(
+                chat_id,
+                img_detail_path,
+                caption=(
+                    f"តារាងការងារ {team} សម្រាប់ {task_title}"
+                    f" ({shift_title})"
+                ),
+            )
+
+      # -------------------------------------------------------------
+      # B. គណនា Task Summary ផ្ញើទៅ MAIN GROUP
+      # -------------------------------------------------------------
       rows = []
       tot_target = tot_approved = tot_not_approved = tot_remain = 0
 
@@ -364,7 +383,6 @@ def main():
           styled_summary.hide(axis="index"), img_summary_path, max_rows=-1
       )
 
-      # ផ្ញើតារាង Task Summary ទៅ MAIN GROUP
       client.send_file(
           MAIN_GROUP_ID,
           img_summary_path,
@@ -372,7 +390,7 @@ def main():
       )
 
     # -------------------------------------------------------------
-    # ផ្ញើតារាង Overall Summary ទៅ MAIN GROUP
+    # C. ផ្ញើតារាង Overall Summary ទៅ MAIN GROUP
     # -------------------------------------------------------------
     title_3 = f"Report Plan Power M{now.month}"
     overall_rows = []
@@ -421,7 +439,6 @@ def main():
     img_overall_path = "overall_report.png"
     dfi.export(styled_overall.hide(axis="index"), img_overall_path, max_rows=-1)
 
-    # ផ្ញើតារាងសរុបរួមទៅ Main Group
     client.send_file(
         MAIN_GROUP_ID,
         img_overall_path,
