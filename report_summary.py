@@ -166,8 +166,11 @@ def main():
                         f"{team}: Approved {approved} | Not Approved {not_approved} | "
                         f"នៅសល់ {remain} | សរុប {total}"
                     )
-                client.send_message(chat_id, "\n".join(lines))
-                print(f"[Type2] {sheet_name} -> {chat_id}")
+                try:
+                    client.send_message(chat_id, "\n".join(lines))
+                    print(f"[Type2] {sheet_name} -> {chat_id}")
+                except Exception as e:
+                    print(f"[Type2] {sheet_name} -> {chat_id} - ERROR (គណនីប្រហែលមិនទាន់ចូលក្រុមនេះ): {e}")
                 time.sleep(DELAY_BETWEEN_MESSAGES_SEC)
             else:
                 print(f"[Type2] {sheet_name} - គ្មាន Chat ID កំណត់ក្នុង 'Team chat IDs' ជួរឈរ C/D - រំលង")
@@ -191,8 +194,11 @@ def main():
                 f"   % សម្រេច: {pct}%\n"
                 f"   សរុប: {total}"
             )
-            client.send_message(chat_id, msg)
-            print(f"[Type1] {team} -> {chat_id}")
+            try:
+                client.send_message(chat_id, msg)
+                print(f"[Type1] {team} -> {chat_id}")
+            except Exception as e:
+                print(f"[Type1] {team} -> {chat_id} - ERROR (គណនីប្រហែលមិនទាន់ចូលក្រុមនេះ): {e}")
             time.sleep(DELAY_BETWEEN_MESSAGES_SEC)
 
         # ============================================================
@@ -208,8 +214,11 @@ def main():
             f"   % សម្រេច: {pct}%\n"
             f"   សរុប: {total}"
         )
-        client.send_message(MAIN_GROUP_ID, msg)
-        print(f"[Type3] Overall -> {MAIN_GROUP_ID}")
+        try:
+            client.send_message(MAIN_GROUP_ID, msg)
+            print(f"[Type3] Overall -> {MAIN_GROUP_ID}")
+        except Exception as e:
+            print(f"[Type3] Overall -> {MAIN_GROUP_ID} - ERROR (គណនីប្រហែលមិនទាន់ចូលក្រុមនេះ): {e}")
 
 
 if __name__ == "__main__":
