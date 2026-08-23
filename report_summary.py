@@ -11,36 +11,36 @@ from telethon.sync import TelegramClient
 SPREADSHEET_ID = "1PmMSqfeBWhYJe5dMv3PrLOFKc2YmLYP8BdCvf9FyZX4"
 
 # -------------------------------------------------------------
-# កំណត់ចំណងជើងពេញលេញសម្រាប់ Task នីមួយៗ (Updated)
+# កំណត់ចំណងជើងពេញលេញសម្រាប់ Task នីមួយៗ (A1 ដល់ C4)
 # -------------------------------------------------------------
 TASK_NAMES = {
-    "A1": "Implement big plan maintenance and set parameter",
-    "A2": "Maintenance generator sos & test ATS",
-    "A6": "Maintenance air-conditioner",
-    "A7": "Test Battery BTS",
-    "B1": "Updating and standardizing data on PMCD 2.0",
-    "B2": "Solve Parameter wrong DC ZTE ZXDU68 V6.0",
-    "B3": "Install ‎FAC 5G Ventilation Systems",
-    "B4": "DC Connect new on IMES system",
-    "B5": "Solve DC Cabinet Loss Data on IMES",
-    "B6": "Install Generator new IMES system",
+    "A1": "A1.Implement big plan maintenance and set parameter",
+    "A2": "A2.Maintenance generator sos & test ATS",
+    "A6": "A6.Maintenance air-conditioner",
+    "A7": "A7.Test Battery BTS",
+    "B1": "B1.Updating and standardizing data on PMCD 2.0",
+    "B2": "B2.Solve Parameter wrong DC ZTE ZXDU68 V6.0",
+    "B3": "B3.Install ‎FAC 5G Ventilation Systems",
+    "B4": "B4.DC Connect new on IMES system",
+    "B5": "B5.Solve DC Cabinet Loss Data on IMES",
+    "B6": "B6.Install Generator new IMES system",
     "B7": (
-        "Deployment of Replacement and Supplementary Works for Improvement of"
+        "B7.Deployment of Replacement and Supplementary Works for Improvement of"
         " Electromechanical Power System Stability in 2026"
     ),
-    "B9": "Connect new power meter online IMES system",
-    "B11": "Swap new generator",
+    "B9": "B9.Connect new power meter online IMES system",
+    "B11": "B11.Swap new generator",
     "B12": (
-        "The optimal deployment of power systems for enclosed BTS stations in"
+        "B12.The optimal deployment of power systems for enclosed BTS stations in"
         " 2021"
     ),
-    "B13": "Check AC system of site has power consumption abnormal",
-    "B14": "Swap Cabinet for battery and DC mini outdoor",
-    "B17": "Connect battery online ",
-    "C1": "Survey power system for upgrade cell and New site.C1",
-    "C2": "Solve DAQ, battery and Generator offline",
-    "C3": "Report.Branch check online DAQ &Cabinet ZTE on-air new site",
-    "C4": "Check SRT have backup power less than 2h",
+    "B13": "B13.Check AC system of site has power consumption abnormal",
+    "B14": "B14.Swap Cabinet for battery and DC mini outdoor",
+    "B17": "B17.Connect battery online ",
+    "C1": "C1.Survey power system for upgrade cell and New site.C1",
+    "C2": "C2.Solve DAQ, battery and Generator offline",
+    "C3": "C3.Report.Branch check online DAQ &Cabinet ZTE on-air new site",
+    "C4": "C4.Check SRT have backup power less than 2h",
 }
 
 # Main Group (CHA_Power Dept.)
@@ -210,7 +210,7 @@ def main():
       if df_task is None or df_task.empty:
         continue
 
-      # A. បង្កើត និង Filter តារាងលម្អិត Site (លុបជួរ nan និង #N/A)
+      # A. បង្កើត និង Filter តារាងលម្អិត Site (តម្រៀបតាម Team CHA-T01 -> CHA-T07)
       cols_to_show = [
           "No.",
           "Group task",
@@ -228,7 +228,7 @@ def main():
       if available_cols:
         df_detail = df_task[available_cols].copy()
 
-        # ១. Filter លុបជួរដែលគ្មានទិន្នន័យ (លុបជួរដែល Group task ឬ Site name ឬ Team ទទេ/nan/#N/A)
+        # ១. Filter លុបជួរដែលគ្មានទិន្នន័យ (Group task, Site name, Team ទទេ/nan/#N/A)
         if "Group task" in df_detail.columns:
           df_detail = df_detail[
               df_detail["Group task"].notna()
@@ -253,7 +253,11 @@ def main():
               )
           ]
 
-        # ២. ជំនួស Cell ទទេ ឬ 'nan' ក្នុង Column ផ្សេងទៀតឱ្យទៅជា Blank ""
+        # ២. តម្រៀបទិន្នន័យជួរតាម Team (CHA-T01 ដល់ CHA-T07)
+        if "Team" in df_detail.columns:
+          df_detail = df_detail.sort_values(by="Team", ascending=True)
+
+        # ៣. ជំនួស Cell ទទេ ឬ 'nan' ឱ្យទៅជា Blank ""
         df_detail = df_detail.fillna("")
         df_detail = df_detail.replace(
             to_replace=r"^(?i:nan|none|#n/a|n/a)$", value="", regex=True
