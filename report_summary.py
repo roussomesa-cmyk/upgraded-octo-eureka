@@ -11,25 +11,25 @@ from telethon.sync import TelegramClient
 SPREADSHEET_ID = "1PmMSqfeBWhYJe5dMv3PrLOFKc2YmLYP8BdCvf9FyZX4"
 
 # -------------------------------------------------------------
-# កំណត់ចំណងជើងពេញលេញសម្រាប់ Task នីមួយៗ (A1 ដល់ C4)
+# កំណត់ចំណងជើងពេញលេញសម្រាប់ Task នីមួយៗ
 # -------------------------------------------------------------
 TASK_NAMES = {
     "A1": "A1.Implement big plan maintenance and set parameter",
     "A2": "A2.Maintenance generator sos & test ATS",
     "A6": "A6.Maintenance air-conditioner",
     "A7": "A7.Test Battery BTS",
-    "B1": "B1.Updating and standardizing data on PMCD 2.0(update Vsmart)",
+    "B1": "B1.Updating and standardizing data on PMCD 2.0(update on Vsmart)",
     "B2": "B2.Solve Parameter wrong DC ZTE ZXDU68 V6.0",
     "B3": "B3.Install ‎FAC 5G Ventilation Systems",
     "B4": "B4.DC Connect new on IMES system",
     "B5": "B5.Solve DC Cabinet Loss Data on IMES",
-    "B6": "b6.Install Generator new IMES system",
+    "B6": "B6.Install Generator new IMES system",
     "B7": (
         "B7.Deployment of Replacement and Supplementary Works for Improvement of"
         " Electromechanical Power System Stability in 2026"
     ),
     "B9": "B9.Connect new power meter online IMES system",
-    "B11": "B11.Swap new generator",
+    "B11": "B11Swap new generator",
     "B12": (
         "B12.The optimal deployment of power systems for enclosed BTS stations in"
         " 2021"
@@ -126,7 +126,7 @@ def style_task_summary(df, title):
   ])
 
   def apply_row_styles(row):
-    if row.name == 0:  # Row សរុប
+    if row.name == 0:
       return [
           "color: red; font-style: italic; font-weight: bold;" for _ in row
       ]
@@ -199,7 +199,8 @@ def main():
         continue
 
   now = datetime.now()
-  shift_title = "Morning Shift" if now.hour < 12 else "Evening Shift"
+  is_morning = now.hour < 12
+  shift_title = "Morning Shift" if is_morning else "Evening Shift"
 
   overall_stats = {
       team: {"Target": 0, "Approved": 0, "NotApproved": 0}
@@ -220,7 +221,7 @@ def main():
         continue
 
       # -------------------------------------------------------------
-      # A. បំបែកទិន្នន័យ និងផ្ញើ ១ រូបភាព សម្រាប់ ១ Team (CHA-T01 ដល់ CHA-T07)
+      # A. បំបែកទិន្នន័យ និងផ្ញើ ១ រូបភាព សម្រាប់ ១ Team
       # -------------------------------------------------------------
       cols_to_show = [
           "No.",
@@ -239,7 +240,7 @@ def main():
       if available_cols and "Team" in df_task.columns:
         df_detail = df_task[available_cols].copy()
 
-        # Filter លុបជួរដែលគ្មានទិន្នន័យ (Group task, Site name, Team ទទេ/nan/#N/A)
+        # Filter លុបជួរដែលគ្មានទិន្នន័យ (Group task, Site name)
         if "Group task" in df_detail.columns:
           df_detail = df_detail[
               df_detail["Group task"].notna()
@@ -264,6 +265,15 @@ def main():
               )
           ]
 
+        # -------------------------------------------------------------
+        # 💡 លក្ខខណ្ឌពេលព្រឹក ៖ លុបជួរណាដែល Approved ចោល (យកតែ Remain/Pending)
+        # -------------------------------------------------------------
+        if is_morning and "Result" in df_detail.columns:
+          df_detail = df_detail[
+              df_detail["Result"].astype(str).str.strip().str.lower()
+              != "approved"
+          ]
+
         df_detail = df_detail.fillna("")
         df_detail = df_detail.replace(
             to_replace=r"^(?i:nan|none|#n/a|n/a)$", value="", regex=True
@@ -286,13 +296,16 @@ def main():
                 styled_detail.hide(axis="index"), img_detail_path, max_rows=-1
             )
 
+            caption_text = (
+                f"តារាងការងារត្រូវបន្ត {team} ({task_title})"
+                if is_morning
+                else f"តារាងការងារលម្អិត {team} ({task_title})"
+            )
+
             client.send_file(
                 chat_id,
                 img_detail_path,
-                caption=(
-                    f"តារាងការងារ {team} សម្រាប់ {task_title}"
-                    f" ({shift_title})"
-                ),
+                caption=f"{caption_text} - {shift_title}",
             )
 
       # -------------------------------------------------------------
