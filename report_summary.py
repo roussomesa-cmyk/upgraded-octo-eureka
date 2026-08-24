@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import io
 import os
 import dataframe_image as dfi
@@ -198,7 +198,12 @@ def main():
       except ValueError:
         continue
 
-  now = datetime.now()
+  # -------------------------------------------------------------
+  # 💡 កែប្រែប្រើ Timezone ម៉ោងកម្ពុជា (UTC+7) ត្រង់នេះ
+  # -------------------------------------------------------------
+  cambodia_tz = timezone(timedelta(hours=7))
+  now = datetime.now(cambodia_tz)
+
   is_morning = now.hour < 12
   shift_title = "Morning Shift" if is_morning else "Evening Shift"
 
