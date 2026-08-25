@@ -2,10 +2,10 @@ name: Daily Report Automation
 
 on:
   schedule:
-    # ម៉ោង 7:30 AM កម្ពុជា (UTC 0:30 AM)
-    - cron: '30 0 * * *'
-    # ម៉ោង 5:00 PM កម្ពុជា (UTC 10:00 AM)
-    - cron: '0 10 * * *'
+    # ម៉ោង 6:30 AM កម្ពុជា (UTC 11:30 PM ថ្ងៃមុន)
+    - cron: '30 23 * * *'
+    # ម៉ោង 4:30 PM កម្ពុជា (UTC 9:30 AM)
+    - cron: '30 9 * * *'
   workflow_dispatch: # សម្រាប់ចុច Test ផ្ទាល់ដៃ
 
 jobs:
