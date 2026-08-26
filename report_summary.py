@@ -41,6 +41,7 @@ TASK_NAMES = {
     "C2": "C2.Solve DAQ, battery and Generator offline",
     "C3": "C3.Report.Branch check online DAQ &Cabinet ZTE on-air new site",
     "C4": "C4.Check SRT have backup power less than 2h",
+    "K5": "K5.KPI_5_ELE_VTC_KPI_ATS"
 }
 
 # Main Group (CHA_Power Dept.)
