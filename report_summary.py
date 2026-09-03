@@ -303,9 +303,9 @@ def main():
             )
 
             caption_text = (
-                f"តារាងការងារត្រូវបន្ត {team} ({task_title})"
+                f"ការងារត្រូវមិនទាន់ធ្វើ {team} ({task_title})"
                 if is_morning
-                else f"តារាងការងារលម្អិត {team} ({task_title})"
+                else f"ការងារសរុប {team} ({task_title})"
             )
 
             client.send_file(
