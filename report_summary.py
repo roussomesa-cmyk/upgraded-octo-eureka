@@ -7,9 +7,9 @@ import requests
 from telethon.sessions import StringSession
 from telethon.sync import TelegramClient
 
-# ទាញយកតម្លៃពី GitHub Secrets (បើគ្មាន វានឹងប្រើតម្លៃ Default)
-SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1PmMSqfeBWhYJe5dMv3PrLOFKc2YmLYP8BdCvf9FyZX4")
-MAIN_GROUP_ID = int(os.environ.get("NOTIFY_GROUP_ID", "-1001853372580"))
+# ទាញយកតម្លៃពី GitHub Secrets (បើគ្មាន ឬទទេ វានឹងប្រើតម្លៃ Default)
+SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID") or "1PmMSqfeBWhYJe5dMv3PrLOFKc2YmLYP8BdCvf9FyZX4"
+MAIN_GROUP_ID = int(os.environ.get("NOTIFY_GROUP_ID") or "-1001853372580")
 
 VALID_TEAMS = [f"CHA-T0{i}" for i in range(1, 8)]
 
@@ -31,21 +31,26 @@ COMMON_CAPTION_STYLE = {
 def fetch_csv(sheet_name_or_gid):
     url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name_or_gid}"
     headers = {"User-Agent": "Mozilla/5.0"}
-    res = requests.get(url, headers=headers)
+    try:
+        res = requests.get(url, headers=headers, timeout=15)
+    except requests.RequestException as e:
+        print(f"⚠️ Request failed for sheet '{sheet_name_or_gid}': {e}")
+        return None
+
     if res.status_code == 200:
         lines = res.text.splitlines()
         header_row_idx = 0
-        
+
         for idx, line in enumerate(lines[:15]):
             line_lower = line.lower()
             if "site name" in line_lower or "team" in line_lower:
                 header_row_idx = idx
                 break
-        
+
         df = pd.read_csv(io.StringIO(res.text), skiprows=header_row_idx)
         df = df.dropna(how="all")
         df.columns = df.columns.astype(str).str.strip()
-        
+
         rename_dict = {}
         for col in df.columns:
             c_lower = col.lower().strip()
@@ -59,27 +64,34 @@ def fetch_csv(sheet_name_or_gid):
                 rename_dict[col] = "Group task"
             elif "result" in c_lower:
                 rename_dict[col] = "Result"
-                
+
         if rename_dict:
             df = df.rename(columns=rename_dict)
-            
+
         return df
+
+    print(f"⚠️ Failed to fetch sheet '{sheet_name_or_gid}': HTTP {res.status_code}")
     return None
 
 def get_task_title_from_sheet(sheet_name_or_gid):
     url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name_or_gid}"
     headers = {"User-Agent": "Mozilla/5.0"}
-    res = requests.get(url, headers=headers)
+    try:
+        res = requests.get(url, headers=headers, timeout=15)
+    except requests.RequestException as e:
+        print(f"⚠️ Request failed for title lookup '{sheet_name_or_gid}': {e}")
+        return f"Task {sheet_name_or_gid}"
+
     if res.status_code == 200:
         lines = res.text.splitlines()
         for line in lines[:4]:
             clean_line = line.replace('"', "").strip()
             clean_lower = clean_line.lower()
-            
+
             if (
-                clean_line 
-                and not clean_lower.startswith("no") 
-                and "site name" not in clean_lower 
+                clean_line
+                and not clean_lower.startswith("no")
+                and "site name" not in clean_lower
                 and "team" not in clean_lower
                 and len(clean_line) > 3
             ):
@@ -124,6 +136,23 @@ def style_overall_summary(df, title):
     return styler.apply(apply_total_style, axis=1)
 
 def main():
+    # -- validate Telegram credentials up front --
+    api_id_raw = os.environ.get("TELEGRAM_API_ID")
+    api_hash = os.environ.get("TELEGRAM_API_HASH")
+    session_str = os.environ.get("TELEGRAM_SESSION")
+
+    if not api_id_raw:
+        raise ValueError("TELEGRAM_API_ID is missing or empty in environment/secrets")
+    try:
+        api_id = int(api_id_raw)
+    except ValueError:
+        raise ValueError(f"TELEGRAM_API_ID is not a valid integer: '{api_id_raw}'")
+
+    if not api_hash:
+        raise ValueError("TELEGRAM_API_HASH is missing or empty in environment/secrets")
+    if not session_str:
+        raise ValueError("TELEGRAM_SESSION is missing or empty in environment/secrets")
+
     df_mapping = fetch_csv("Team%20chat%20IDs")
     task_chat_ids = {}
 
@@ -136,6 +165,10 @@ def main():
             except ValueError:
                 continue
 
+    if not task_chat_ids:
+        print("⚠️ WARNING: task_chat_ids is empty — check the 'Team chat IDs' sheet (columns 'Sheet' / 'ChatID', or the sheet failed to load). No reports will be sent.")
+        return
+
     cambodia_tz = timezone(timedelta(hours=7))
     now = datetime.now(cambodia_tz)
     is_morning = now.hour < 12
@@ -143,15 +176,11 @@ def main():
 
     overall_stats = {team: {"Target": 0, "Approved": 0, "NotApproved": 0} for team in VALID_TEAMS}
 
-    api_id = int(os.environ.get("TELEGRAM_API_ID"))
-    api_hash = os.environ.get("TELEGRAM_API_HASH")
-    session_str = os.environ.get("TELEGRAM_SESSION")
-
     with TelegramClient(StringSession(session_str), api_id, api_hash) as client:
         for task_code, chat_id in task_chat_ids.items():
             sheet_sub_title = get_task_title_from_sheet(task_code)
             task_title = f"{task_code}. {sheet_sub_title}"
-            
+
             df_task = fetch_csv(task_code)
             if df_task is None or df_task.empty:
                 continue
@@ -161,7 +190,7 @@ def main():
 
             if available_cols and "Team" in df_task.columns:
                 df_detail = df_task[available_cols].copy()
-                
+
                 df_detail["Team"] = df_detail["Team"].astype(str).str.strip()
                 df_detail = df_detail[df_detail["Team"].isin(VALID_TEAMS)]
 
@@ -196,7 +225,7 @@ def main():
                     df_clean_task = df_task.dropna(subset=["Team"])
                     df_clean_task["Team"] = df_clean_task["Team"].astype(str).str.strip()
                     df_team = df_clean_task[df_clean_task["Team"] == team].copy()
-                    
+
                     target_site = len(df_team)
                     approved = len(df_team[df_team["Result"].astype(str).str.strip().str.lower() == "approved"])
                     not_approved = len(df_team[df_team["Result"].astype(str).str.strip().str.lower() == "not approved"])
