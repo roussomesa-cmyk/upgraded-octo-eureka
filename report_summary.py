@@ -33,15 +33,36 @@ def fetch_csv(sheet_name_or_gid):
     if res.status_code == 200:
         lines = res.text.splitlines()
         header_row_idx = 0
+        
+        # ស្វែងរកជួរ Header ដោយពិនិត្យមើលពាក្យ 'team' ឬ 'site name' (Case-insensitive)
         for idx, line in enumerate(lines[:15]):
-            # ឆែករកមើលជួរដែលមានពាក្យ No., Site name និង Team ព្រមគ្នាដើម្បីកំណត់ជាក្បាលតារាង
-            if "No." in line and "Site name" in line and "Team" in line:
+            line_lower = line.lower()
+            if "site name" in line_lower or "team" in line_lower:
                 header_row_idx = idx
                 break
         
         df = pd.read_csv(io.StringIO(res.text), skiprows=header_row_idx)
         df = df.dropna(how="all")
         df.columns = df.columns.astype(str).str.strip()
+        
+        # សម្រួលឈ្មោះ Column ឱ្យត្រូវតាមស្តង់ដារដែលកូដប្រើប្រាស់
+        rename_dict = {}
+        for col in df.columns:
+            c_lower = col.lower().strip()
+            if "site name" in c_lower:
+                rename_dict[col] = "Site name"
+            elif c_lower in ["no", "no."]:
+                rename_dict[col] = "No."
+            elif c_lower == "team":
+                rename_dict[col] = "Team"
+            elif "group task" in c_lower:
+                rename_dict[col] = "Group task"
+            elif "result" in c_lower:
+                rename_dict[col] = "Result"
+                
+        if rename_dict:
+            df = df.rename(columns=rename_dict)
+            
         return df
     return None
 
@@ -53,7 +74,16 @@ def get_task_title_from_sheet(sheet_name_or_gid):
         lines = res.text.splitlines()
         for line in lines[:4]:
             clean_line = line.replace('"', "").strip()
-            if clean_line and not clean_line.startswith("No.,") and len(clean_line) > 5:
+            clean_lower = clean_line.lower()
+            
+            # រំលងជួរណាដែលជា Header តារាង ឬជួរទទេ
+            if (
+                clean_line 
+                and not clean_lower.startswith("no") 
+                and "site name" not in clean_lower 
+                and "team" not in clean_lower
+                and len(clean_line) > 3
+            ):
                 parts = [p.strip() for p in clean_line.split(",") if p.strip()]
                 if len(parts) == 1 and not parts[0].isdigit():
                     return parts[0]
@@ -186,6 +216,10 @@ def main():
 
                 rows.append({"No": idx, "Team": team, "Target Site": target_site, "Approved": approved, "Not Approved": not_approved, "%": pct_val, "Remain": remain, "Remark": ""})
 
+            # **បន្ថែមត្រង់នេះ:** ប្រសិនបើគ្មាន Target Site សរុបសោះ (tot_target == 0) នោះវានឹងរំលងការផ្ញើចូល Main Group
+            if tot_target == 0:
+                continue
+
             tot_pct = f"{int(round((tot_approved / tot_target) * 100))}%" if tot_target > 0 else "0%"
             total_row = {"No": "", "Team": "", "Target Site": tot_target, "Approved": tot_approved, "Not Approved": tot_not_approved, "%": tot_pct, "Remain": tot_remain, "Remark": ""}
 
@@ -216,15 +250,17 @@ def main():
 
             overall_rows.append({"No": idx, "Branch": team, "Target Site": t, "Approved": a, "Not Approved": na, "%": pct, "Remain": r})
 
-        sum_pct = f"{int(round((sum_approved / sum_target) * 100))}%" if sum_target > 0 else "0%"
-        overall_rows.append({"No": "TOTAL", "Branch": "", "Target Site": sum_target, "Approved": sum_approved, "Not Approved": sum_not_approved, "%": sum_pct, "Remain": sum_remain})
+        # **ប្រសិនបើសរុបរួមគ្រប់ Task ទាំងអស់គ្មានទិន្នន័យសោះ នោះក៏មិនបាច់ផ្ញើរបាយការណ៍សរុបរួមដែរ**
+        if sum_target > 0:
+            sum_pct = f"{int(round((sum_approved / sum_target) * 100))}%" if sum_target > 0 else "0%"
+            overall_rows.append({"No": "TOTAL", "Branch": "", "Target Site": sum_target, "Approved": sum_approved, "Not Approved": sum_not_approved, "%": sum_pct, "Remain": sum_remain})
 
-        df_overall = pd.DataFrame(overall_rows)
-        styled_overall = style_overall_summary(df_overall, title_3)
-        img_overall_path = "overall_report.png"
-        dfi.export(styled_overall.hide(axis="index"), img_overall_path, max_rows=-1)
+            df_overall = pd.DataFrame(overall_rows)
+            styled_overall = style_overall_summary(df_overall, title_3)
+            img_overall_path = "overall_report.png"
+            dfi.export(styled_overall.hide(axis="index"), img_overall_path, max_rows=-1)
 
-        client.send_file(MAIN_GROUP_ID, img_overall_path, caption=f"របាយការណ៍សរុបរួម {title_3} - {shift_title}")
+            client.send_file(MAIN_GROUP_ID, img_overall_path, caption=f"របាយការណ៍សរុបរួម {title_3} - {shift_title}")
 
 if __name__ == "__main__":
     main()
