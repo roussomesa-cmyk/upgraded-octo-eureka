@@ -12,12 +12,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        # អាប់ដេតពី @v4 ទៅ @v5 ឬ @v6 (អាស្រ័យលើ release ចុងក្រោយ)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        # អាប់ដេតពី @v5 ទៅ @v6
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.10'
 
