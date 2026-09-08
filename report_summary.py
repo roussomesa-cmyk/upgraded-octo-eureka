@@ -7,8 +7,10 @@ import requests
 from telethon.sessions import StringSession
 from telethon.sync import TelegramClient
 
-SPREADSHEET_ID = "1PmMSqfeBWhYJe5dMv3PrLOFKc2YmLYP8BdCvf9FyZX4"
-MAIN_GROUP_ID = -1001853372580
+# ទាញយកតម្លៃពី GitHub Secrets (បើគ្មាន វានឹងប្រើតម្លៃ Default)
+SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1PmMSqfeBWhYJe5dMv3PrLOFKc2YmLYP8BdCvf9FyZX4")
+MAIN_GROUP_ID = int(os.environ.get("NOTIFY_GROUP_ID", "-1001853372580"))
+
 VALID_TEAMS = [f"CHA-T0{i}" for i in range(1, 8)]
 
 COMMON_CAPTION_STYLE = {
@@ -34,7 +36,6 @@ def fetch_csv(sheet_name_or_gid):
         lines = res.text.splitlines()
         header_row_idx = 0
         
-        # ស្វែងរកជួរ Header ដោយពិនិត្យមើលពាក្យ 'team' ឬ 'site name' (Case-insensitive)
         for idx, line in enumerate(lines[:15]):
             line_lower = line.lower()
             if "site name" in line_lower or "team" in line_lower:
@@ -45,7 +46,6 @@ def fetch_csv(sheet_name_or_gid):
         df = df.dropna(how="all")
         df.columns = df.columns.astype(str).str.strip()
         
-        # សម្រួលឈ្មោះ Column ឱ្យត្រូវតាមស្តង់ដារដែលកូដប្រើប្រាស់
         rename_dict = {}
         for col in df.columns:
             c_lower = col.lower().strip()
@@ -76,7 +76,6 @@ def get_task_title_from_sheet(sheet_name_or_gid):
             clean_line = line.replace('"', "").strip()
             clean_lower = clean_line.lower()
             
-            # រំលងជួរណាដែលជា Header តារាង ឬជួរទទេ
             if (
                 clean_line 
                 and not clean_lower.startswith("no") 
@@ -216,7 +215,6 @@ def main():
 
                 rows.append({"No": idx, "Team": team, "Target Site": target_site, "Approved": approved, "Not Approved": not_approved, "%": pct_val, "Remain": remain, "Remark": ""})
 
-            # **បន្ថែមត្រង់នេះ:** ប្រសិនបើគ្មាន Target Site សរុបសោះ (tot_target == 0) នោះវានឹងរំលងការផ្ញើចូល Main Group
             if tot_target == 0:
                 continue
 
@@ -250,7 +248,6 @@ def main():
 
             overall_rows.append({"No": idx, "Branch": team, "Target Site": t, "Approved": a, "Not Approved": na, "%": pct, "Remain": r})
 
-        # **ប្រសិនបើសរុបរួមគ្រប់ Task ទាំងអស់គ្មានទិន្នន័យសោះ នោះក៏មិនបាច់ផ្ញើរបាយការណ៍សរុបរួមដែរ**
         if sum_target > 0:
             sum_pct = f"{int(round((sum_approved / sum_target) * 100))}%" if sum_target > 0 else "0%"
             overall_rows.append({"No": "TOTAL", "Branch": "", "Target Site": sum_target, "Approved": sum_approved, "Not Approved": sum_not_approved, "%": sum_pct, "Remain": sum_remain})
