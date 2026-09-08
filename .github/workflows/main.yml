@@ -1,36 +1,30 @@
 name: Daily Report Automation
-
 on:
   schedule:
     # ដំណើរការតែពេលព្រឹកម៉ោង 5:30 AM (UTC 22:30 ថ្ងៃមុន)
     - cron: '30 22 * * *'
   workflow_dispatch:
-
 jobs:
   run-report:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
-
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
           python-version: '3.10'
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install telethon gspread google-auth pandas dataframe_image html2image requests
           sudo apt-get update
           sudo apt-get install -y chromium-browser
-
       - name: Run Report Script
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
           TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
-          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-          NOTIFY_GROUP_ID: ${{ secrets.NOTIFY_GROUP_ID }}
+          SPREADSHEET_ID: ${{ secrets.REPORT_SPREADSHEET_ID }}
+          NOTIFY_GROUP_ID: ${{ secrets.REPORT_NOTIFY_GROUP_ID }}
         run: python report_summary.py
