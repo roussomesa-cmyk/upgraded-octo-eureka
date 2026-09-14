@@ -4,6 +4,7 @@ import os
 import dataframe_image as dfi
 import pandas as pd
 import requests
+from deep_translator import GoogleTranslator
 from telethon.sessions import StringSession
 from telethon.sync import TelegramClient
 
@@ -83,23 +84,28 @@ def get_task_title_from_sheet(sheet_name_or_gid):
         print(f"⚠️ Request failed for title lookup '{sheet_name_or_gid}': {e}")
         return f"Task {sheet_name_or_gid}"
 
+    title_en = None
     if res.status_code == 200:
         lines = res.text.splitlines()
-        for line in lines[:4]:
-            clean_line = line.replace('"', "").strip()
-            clean_lower = clean_line.lower()
+        if lines:
+            # ចំណងជើងការងារនៅជានិច្ចត្រង់ Row 1, Column A (merged cell)
+            first_line = lines[0].replace('"', "").strip()
+            first_cell = first_line.split(",")[0].strip()
+            if first_cell and not first_cell.isdigit():
+                title_en = first_cell
 
-            if (
-                clean_line
-                and not clean_lower.startswith("no")
-                and "site name" not in clean_lower
-                and "team" not in clean_lower
-                and len(clean_line) > 3
-            ):
-                parts = [p.strip() for p in clean_line.split(",") if p.strip()]
-                if len(parts) == 1 and not parts[0].isdigit():
-                    return parts[0]
-    return f"Task {sheet_name_or_gid}"
+    if not title_en:
+        print(f"⚠️ Could not extract title for '{sheet_name_or_gid}', using fallback.")
+        return f"Task {sheet_name_or_gid}"
+
+    try:
+        title_km = GoogleTranslator(source="en", target="km").translate(title_en)
+        if title_km:
+            return title_km
+    except Exception as e:
+        print(f"⚠️ Translation failed for '{title_en}': {e}. Using original English title.")
+
+    return title_en
 
 def style_detail_table(df, title):
     styler = df.style.set_caption(title).set_table_styles([
@@ -205,6 +211,7 @@ def main():
                 if "Site name" in df_detail.columns:
                     df_detail = df_detail[df_detail["Site name"].notna() & (~df_detail["Site name"].astype(str).str.strip().str.lower().isin(["", "nan", "none", "#n/a", "n/a"]))]
 
+                # ពេលព្រឹក៖ ច្រោះចេញ site ដែល Approved រួច — ផ្ញើតែ site មិនទាន់ approve
                 if is_morning and "Result" in df_detail.columns:
                     df_detail = df_detail[df_detail["Result"].astype(str).str.strip().str.lower() != "approved"]
 
@@ -213,6 +220,7 @@ def main():
 
                 for team in VALID_TEAMS:
                     df_single_team = df_detail[df_detail["Team"] == team].copy()
+                    # បើ team នេះ approve អស់ ១០០% ពេលព្រឹក (គ្មានជួរសល់ក្រោយច្រោះ) → មិនផ្ញើទេ
                     if not df_single_team.empty:
                         styled_detail = style_detail_table(df_single_team, f"{task_title} ({team})")
                         img_detail_path = f"detail_{task_code}_{team}.png"
@@ -220,6 +228,8 @@ def main():
 
                         caption_text = f"ការងារត្រូវមិនទាន់ធ្វើ {team} ({task_title})" if is_morning else f"ការងារសរុប {team} ({task_title})"
                         client.send_file(chat_id, img_detail_path, caption=f"{caption_text} - {shift_title}")
+                    else:
+                        print(f"ℹ️ '{task_code}' / team '{team}': no pending items (all approved or no data) — skipped, no image sent.")
             else:
                 print(f"⚠️ '{task_code}': missing 'Team' column or no recognizable columns — no detail images sent.")
 
