@@ -40,10 +40,11 @@ def fetch_csv(sheet_name_or_gid):
     if res.status_code == 200:
         lines = res.text.splitlines()
         header_row_idx = 0
+        header_keywords = {"site name", "team", "sheet", "chatid", "no", "no."}
 
         for idx, line in enumerate(lines[:15]):
-            line_lower = line.lower()
-            if "site name" in line_lower or "team" in line_lower:
+            cells = [c.strip().strip('"').lower() for c in line.split(",")]
+            if any(cell in header_keywords for cell in cells):
                 header_row_idx = idx
                 break
 
@@ -153,6 +154,7 @@ def main():
     if not session_str:
         raise ValueError("TELEGRAM_SESSION is missing or empty in environment/secrets")
 
+    # Col C = "Sheet" (task code), Col D = "ChatID" (group chat_id for that task)
     df_mapping = fetch_csv("Team%20chat%20IDs")
     task_chat_ids = {}
 
@@ -169,6 +171,8 @@ def main():
         print("⚠️ WARNING: task_chat_ids is empty — check the 'Team chat IDs' sheet (columns 'Sheet' / 'ChatID', or the sheet failed to load). No reports will be sent.")
         return
 
+    print(f"ℹ️ Loaded {len(task_chat_ids)} task->chat mappings: {task_chat_ids}")
+
     cambodia_tz = timezone(timedelta(hours=7))
     now = datetime.now(cambodia_tz)
     is_morning = now.hour < 12
@@ -183,6 +187,7 @@ def main():
 
             df_task = fetch_csv(task_code)
             if df_task is None or df_task.empty:
+                print(f"⚠️ Skipping '{task_code}': sheet is empty or failed to load.")
                 continue
 
             cols_to_show = ["No.", "Group task", "Branch", "Site name", "Q'ty task/Local task", "Result", "Remark", "Last date record", "History Task", "Team"]
@@ -215,6 +220,8 @@ def main():
 
                         caption_text = f"ការងារត្រូវមិនទាន់ធ្វើ {team} ({task_title})" if is_morning else f"ការងារសរុប {team} ({task_title})"
                         client.send_file(chat_id, img_detail_path, caption=f"{caption_text} - {shift_title}")
+            else:
+                print(f"⚠️ '{task_code}': missing 'Team' column or no recognizable columns — no detail images sent.")
 
             rows = []
             tot_target = tot_approved = tot_not_approved = tot_remain = 0
@@ -245,6 +252,7 @@ def main():
                 rows.append({"No": idx, "Team": team, "Target Site": target_site, "Approved": approved, "Not Approved": not_approved, "%": pct_val, "Remain": remain, "Remark": ""})
 
             if tot_target == 0:
+                print(f"⚠️ Skipping summary for '{task_code}': no rows matched any VALID_TEAMS ({VALID_TEAMS}). Check 'Team' column values in this sheet.")
                 continue
 
             tot_pct = f"{int(round((tot_approved / tot_target) * 100))}%" if tot_target > 0 else "0%"
