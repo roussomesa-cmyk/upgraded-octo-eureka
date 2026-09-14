@@ -1,6 +1,7 @@
 from datetime import datetime, timezone, timedelta
 import io
 import os
+import time
 import dataframe_image as dfi
 import pandas as pd
 import requests
@@ -98,13 +99,19 @@ def get_task_title_from_sheet(sheet_name_or_gid):
         print(f"⚠️ Could not extract title for '{sheet_name_or_gid}', using fallback.")
         return f"Task {sheet_name_or_gid}"
 
-    try:
-        title_km = GoogleTranslator(source="en", target="km").translate(title_en)
-        if title_km:
-            return title_km
-    except Exception as e:
-        print(f"⚠️ Translation failed for '{title_en}': {e}. Using original English title.")
+    # ព្យាយាមបកប្រែជាច្រើនដង ប្រសិនបើ Google Translate hit rate-limit
+    for attempt in range(3):
+        try:
+            title_km = GoogleTranslator(source="en", target="km").translate(title_en)
+            if title_km:
+                return title_km
+            break
+        except Exception as e:
+            wait_sec = 3 * (attempt + 1)
+            print(f"⚠️ Translation attempt {attempt + 1} failed for '{title_en}': {e}. Retrying in {wait_sec}s...")
+            time.sleep(wait_sec)
 
+    print(f"⚠️ Translation gave up for '{title_en}', using English title.")
     return title_en
 
 def style_detail_table(df, title):
@@ -188,6 +195,7 @@ def main():
 
     with TelegramClient(StringSession(session_str), api_id, api_hash) as client:
         for task_code, chat_id in task_chat_ids.items():
+            time.sleep(1.2)  # ជៀសវាង Google Translate rate limit (5 req/sec)
             sheet_sub_title = get_task_title_from_sheet(task_code)
             task_title = f"{task_code}. {sheet_sub_title}"
 
@@ -239,7 +247,7 @@ def main():
             for idx, team in enumerate(VALID_TEAMS, start=1):
                 target_site = approved = not_approved = 0
                 if "Team" in df_task.columns and "Result" in df_task.columns:
-                    df_clean_task = df_task.dropna(subset=["Team"])
+                    df_clean_task = df_task.dropna(subset=["Team"]).copy()
                     df_clean_task["Team"] = df_clean_task["Team"].astype(str).str.strip()
                     df_team = df_clean_task[df_clean_task["Team"] == team].copy()
 
