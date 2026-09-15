@@ -1,15 +1,12 @@
 from datetime import datetime, timezone, timedelta
 import io
 import os
-import time
 import dataframe_image as dfi
 import pandas as pd
 import requests
-from deep_translator import GoogleTranslator
 from telethon.sessions import StringSession
 from telethon.sync import TelegramClient
 
-# ទាញយកតម្លៃពី GitHub Secrets (បើគ្មាន ឬទទេ វានឹងប្រើតម្លៃ Default)
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID") or "1PmMSqfeBWhYJe5dMv3PrLOFKc2YmLYP8BdCvf9FyZX4"
 MAIN_GROUP_ID = int(os.environ.get("NOTIFY_GROUP_ID") or "-1001853372580")
 
@@ -71,12 +68,20 @@ def fetch_csv(sheet_name_or_gid):
         if rename_dict:
             df = df.rename(columns=rename_dict)
 
+        # លុប column ដែលមានឈ្មោះស្ទួនគ្នាចោល (រក្សាតែលើកដំបូង) ដើម្បីការពារ
+        # error 'DataFrame' object has no attribute 'str' ពេល column ឈ្មោះស្ទួន
+        if df.columns.duplicated().any():
+            dup_cols = df.columns[df.columns.duplicated()].unique().tolist()
+            print(f"⚠️ Duplicate columns found and removed (keeping first occurrence): {dup_cols}")
+            df = df.loc[:, ~df.columns.duplicated()]
+
         return df
 
     print(f"⚠️ Failed to fetch sheet '{sheet_name_or_gid}': HTTP {res.status_code}")
     return None
 
 def get_task_title_from_sheet(sheet_name_or_gid):
+    """ចំណងជើងការងារនៅជានិច្ចត្រង់ Row 1, Column A (merged cell)."""
     url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name_or_gid}"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -85,34 +90,16 @@ def get_task_title_from_sheet(sheet_name_or_gid):
         print(f"⚠️ Request failed for title lookup '{sheet_name_or_gid}': {e}")
         return f"Task {sheet_name_or_gid}"
 
-    title_en = None
     if res.status_code == 200:
         lines = res.text.splitlines()
         if lines:
-            # ចំណងជើងការងារនៅជានិច្ចត្រង់ Row 1, Column A (merged cell)
             first_line = lines[0].replace('"', "").strip()
             first_cell = first_line.split(",")[0].strip()
             if first_cell and not first_cell.isdigit():
-                title_en = first_cell
+                return first_cell
 
-    if not title_en:
-        print(f"⚠️ Could not extract title for '{sheet_name_or_gid}', using fallback.")
-        return f"Task {sheet_name_or_gid}"
-
-    # ព្យាយាមបកប្រែជាច្រើនដង ប្រសិនបើ Google Translate hit rate-limit
-    for attempt in range(3):
-        try:
-            title_km = GoogleTranslator(source="en", target="km").translate(title_en)
-            if title_km:
-                return title_km
-            break
-        except Exception as e:
-            wait_sec = 3 * (attempt + 1)
-            print(f"⚠️ Translation attempt {attempt + 1} failed for '{title_en}': {e}. Retrying in {wait_sec}s...")
-            time.sleep(wait_sec)
-
-    print(f"⚠️ Translation gave up for '{title_en}', using English title.")
-    return title_en
+    print(f"⚠️ Could not extract title for '{sheet_name_or_gid}', using fallback.")
+    return f"Task {sheet_name_or_gid}"
 
 def style_detail_table(df, title):
     styler = df.style.set_caption(title).set_table_styles([
@@ -150,7 +137,6 @@ def style_overall_summary(df, title):
     return styler.apply(apply_total_style, axis=1)
 
 def main():
-    # -- validate Telegram credentials up front --
     api_id_raw = os.environ.get("TELEGRAM_API_ID")
     api_hash = os.environ.get("TELEGRAM_API_HASH")
     session_str = os.environ.get("TELEGRAM_SESSION")
@@ -167,7 +153,6 @@ def main():
     if not session_str:
         raise ValueError("TELEGRAM_SESSION is missing or empty in environment/secrets")
 
-    # Col C = "Sheet" (task code), Col D = "ChatID" (group chat_id for that task)
     df_mapping = fetch_csv("Team%20chat%20IDs")
     task_chat_ids = {}
 
@@ -181,7 +166,7 @@ def main():
                 continue
 
     if not task_chat_ids:
-        print("⚠️ WARNING: task_chat_ids is empty — check the 'Team chat IDs' sheet (columns 'Sheet' / 'ChatID', or the sheet failed to load). No reports will be sent.")
+        print("⚠️ WARNING: task_chat_ids is empty — check the 'Team chat IDs' sheet. No reports will be sent.")
         return
 
     print(f"ℹ️ Loaded {len(task_chat_ids)} task->chat mappings: {task_chat_ids}")
@@ -190,12 +175,12 @@ def main():
     now = datetime.now(cambodia_tz)
     is_morning = now.hour < 12
     shift_title = "Morning Shift" if is_morning else "Evening Shift"
+    print(f"ℹ️ Shift: {shift_title} — Summary/Overall reports will be sent to MAIN_GROUP_ID only in the Evening Shift.")
 
     overall_stats = {team: {"Target": 0, "Approved": 0, "NotApproved": 0} for team in VALID_TEAMS}
 
     with TelegramClient(StringSession(session_str), api_id, api_hash) as client:
         for task_code, chat_id in task_chat_ids.items():
-            time.sleep(1.2)  # ជៀសវាង Google Translate rate limit (5 req/sec)
             sheet_sub_title = get_task_title_from_sheet(task_code)
             task_title = f"{task_code}. {sheet_sub_title}"
 
@@ -219,7 +204,6 @@ def main():
                 if "Site name" in df_detail.columns:
                     df_detail = df_detail[df_detail["Site name"].notna() & (~df_detail["Site name"].astype(str).str.strip().str.lower().isin(["", "nan", "none", "#n/a", "n/a"]))]
 
-                # ពេលព្រឹក៖ ច្រោះចេញ site ដែល Approved រួច — ផ្ញើតែ site មិនទាន់ approve
                 if is_morning and "Result" in df_detail.columns:
                     df_detail = df_detail[df_detail["Result"].astype(str).str.strip().str.lower() != "approved"]
 
@@ -228,7 +212,6 @@ def main():
 
                 for team in VALID_TEAMS:
                     df_single_team = df_detail[df_detail["Team"] == team].copy()
-                    # បើ team នេះ approve អស់ ១០០% ពេលព្រឹក (គ្មានជួរសល់ក្រោយច្រោះ) → មិនផ្ញើទេ
                     if not df_single_team.empty:
                         styled_detail = style_detail_table(df_single_team, f"{task_title} ({team})")
                         img_detail_path = f"detail_{task_code}_{team}.png"
@@ -273,46 +256,52 @@ def main():
                 print(f"⚠️ Skipping summary for '{task_code}': no rows matched any VALID_TEAMS ({VALID_TEAMS}). Check 'Team' column values in this sheet.")
                 continue
 
-            tot_pct = f"{int(round((tot_approved / tot_target) * 100))}%" if tot_target > 0 else "0%"
-            total_row = {"No": "", "Team": "", "Target Site": tot_target, "Approved": tot_approved, "Not Approved": tot_not_approved, "%": tot_pct, "Remain": tot_remain, "Remark": ""}
+            if is_morning:
+                print(f"ℹ️ '{task_code}': Morning shift — summary image NOT sent to MAIN_GROUP_ID.")
+            else:
+                tot_pct = f"{int(round((tot_approved / tot_target) * 100))}%" if tot_target > 0 else "0%"
+                total_row = {"No": "", "Team": "", "Target Site": tot_target, "Approved": tot_approved, "Not Approved": tot_not_approved, "%": tot_pct, "Remain": tot_remain, "Remark": ""}
 
-            df_summary = pd.DataFrame([total_row] + rows)
-            df_summary.columns = pd.MultiIndex.from_tuples([("", "No"), ("", "Team"), ("", "Target Site"), ("Result", "Approved"), ("Result", "Not Approved"), ("", "%"), ("", "Remain"), ("", "Remark")])
+                df_summary = pd.DataFrame([total_row] + rows)
+                df_summary.columns = pd.MultiIndex.from_tuples([("", "No"), ("", "Team"), ("", "Target Site"), ("Result", "Approved"), ("Result", "Not Approved"), ("", "%"), ("", "Remain"), ("", "Remark")])
 
-            styled_summary = style_task_summary(df_summary, task_title)
-            img_summary_path = f"summary_{task_code}.png"
-            dfi.export(styled_summary.hide(axis="index"), img_summary_path, max_rows=-1)
+                styled_summary = style_task_summary(df_summary, task_title)
+                img_summary_path = f"summary_{task_code}.png"
+                dfi.export(styled_summary.hide(axis="index"), img_summary_path, max_rows=-1)
 
-            client.send_file(MAIN_GROUP_ID, img_summary_path, caption=f"របាយការណ៍សង្ខេប {task_title} ({shift_title})")
+                client.send_file(MAIN_GROUP_ID, img_summary_path, caption=f"របាយការណ៍សង្ខេប {task_title} ({shift_title})")
 
-        title_3 = f"Report Plan Power M{now.month}"
-        overall_rows = []
-        sum_target = sum_approved = sum_not_approved = sum_remain = 0
+        if is_morning:
+            print("ℹ️ Morning shift — overall report NOT sent to MAIN_GROUP_ID.")
+        else:
+            title_3 = f"Report Plan Power M{now.month}"
+            overall_rows = []
+            sum_target = sum_approved = sum_not_approved = sum_remain = 0
 
-        for idx, team in enumerate(VALID_TEAMS, start=1):
-            t = overall_stats[team]["Target"]
-            a = overall_stats[team]["Approved"]
-            na = overall_stats[team]["NotApproved"]
-            r = t - (a + na)
-            pct = f"{int(round((a / t) * 100))}%" if t > 0 else "0%"
+            for idx, team in enumerate(VALID_TEAMS, start=1):
+                t = overall_stats[team]["Target"]
+                a = overall_stats[team]["Approved"]
+                na = overall_stats[team]["NotApproved"]
+                r = t - (a + na)
+                pct = f"{int(round((a / t) * 100))}%" if t > 0 else "0%"
 
-            sum_target += t
-            sum_approved += a
-            sum_not_approved += na
-            sum_remain += r
+                sum_target += t
+                sum_approved += a
+                sum_not_approved += na
+                sum_remain += r
 
-            overall_rows.append({"No": idx, "Branch": team, "Target Site": t, "Approved": a, "Not Approved": na, "%": pct, "Remain": r})
+                overall_rows.append({"No": idx, "Branch": team, "Target Site": t, "Approved": a, "Not Approved": na, "%": pct, "Remain": r})
 
-        if sum_target > 0:
-            sum_pct = f"{int(round((sum_approved / sum_target) * 100))}%" if sum_target > 0 else "0%"
-            overall_rows.append({"No": "TOTAL", "Branch": "", "Target Site": sum_target, "Approved": sum_approved, "Not Approved": sum_not_approved, "%": sum_pct, "Remain": sum_remain})
+            if sum_target > 0:
+                sum_pct = f"{int(round((sum_approved / sum_target) * 100))}%" if sum_target > 0 else "0%"
+                overall_rows.append({"No": "TOTAL", "Branch": "", "Target Site": sum_target, "Approved": sum_approved, "Not Approved": sum_not_approved, "%": sum_pct, "Remain": sum_remain})
 
-            df_overall = pd.DataFrame(overall_rows)
-            styled_overall = style_overall_summary(df_overall, title_3)
-            img_overall_path = "overall_report.png"
-            dfi.export(styled_overall.hide(axis="index"), img_overall_path, max_rows=-1)
+                df_overall = pd.DataFrame(overall_rows)
+                styled_overall = style_overall_summary(df_overall, title_3)
+                img_overall_path = "overall_report.png"
+                dfi.export(styled_overall.hide(axis="index"), img_overall_path, max_rows=-1)
 
-            client.send_file(MAIN_GROUP_ID, img_overall_path, caption=f"របាយការណ៍សរុបរួម {title_3} - {shift_title}")
+                client.send_file(MAIN_GROUP_ID, img_overall_path, caption=f"របាយការណ៍សរុបរួម {title_3} - {shift_title}")
 
 if __name__ == "__main__":
     main()
