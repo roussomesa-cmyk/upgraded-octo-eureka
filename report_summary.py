@@ -64,12 +64,12 @@ def fetch_csv(sheet_name_or_gid):
                 rename_dict[col] = "Group task"
             elif "result" in c_lower:
                 rename_dict[col] = "Result"
+            elif "serial" in c_lower:
+                rename_dict[col] = "Serial"
 
         if rename_dict:
             df = df.rename(columns=rename_dict)
 
-        # លុប column ដែលមានឈ្មោះស្ទួនគ្នាចោល (រក្សាតែលើកដំបូង) ដើម្បីការពារ
-        # error 'DataFrame' object has no attribute 'str' ពេល column ឈ្មោះស្ទួន
         if df.columns.duplicated().any():
             dup_cols = df.columns[df.columns.duplicated()].unique().tolist()
             print(f"⚠️ Duplicate columns found and removed (keeping first occurrence): {dup_cols}")
@@ -81,7 +81,6 @@ def fetch_csv(sheet_name_or_gid):
     return None
 
 def get_task_title_from_sheet(sheet_name_or_gid):
-    """ចំណងជើងការងារនៅជានិច្ចត្រង់ Row 1, Column A (merged cell)."""
     url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name_or_gid}"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -136,6 +135,33 @@ def style_overall_summary(df, title):
         return [""] * len(row)
     return styler.apply(apply_total_style, axis=1)
 
+def build_pending_list_text(df_single_team, team, task_title):
+    """រាយ Site name (+ Serial បើមាន) នៃការងារមិនទាន់ធ្វើ ជាអត្ថបទ."""
+    if "Site name" not in df_single_team.columns:
+        return None
+    has_serial = "Serial" in df_single_team.columns
+
+    lines_data = []
+    for _, row in df_single_team.iterrows():
+        site = str(row.get("Site name", "")).strip()
+        if not site:
+            continue
+        if has_serial:
+            serial = str(row.get("Serial", "")).strip()
+            if serial and serial.lower() not in ("nan", "none", "#n/a", "n/a"):
+                lines_data.append(f"{team} {site} - {serial}")
+            else:
+                lines_data.append(f"{team} {site}")
+        else:
+            lines_data.append(f"{team} {site}")
+
+    if not lines_data:
+        return None
+
+    lines = [f"បញ្ជីការងារមិនទាន់ធ្វើ — {team} ({task_title}):", ""]
+    lines += lines_data
+    return "\n".join(lines)
+
 def main():
     api_id_raw = os.environ.get("TELEGRAM_API_ID")
     api_hash = os.environ.get("TELEGRAM_API_HASH")
@@ -189,7 +215,7 @@ def main():
                 print(f"⚠️ Skipping '{task_code}': sheet is empty or failed to load.")
                 continue
 
-            cols_to_show = ["No.", "Group task", "Branch", "Site name", "Q'ty task/Local task", "Result", "Remark", "Last date record", "History Task", "Team"]
+            cols_to_show = ["No.", "Group task", "Branch", "Site name", "Serial", "Q'ty task/Local task", "Result", "Remark", "Last date record", "History Task", "Team"]
             available_cols = [c for c in cols_to_show if c in df_task.columns]
 
             if available_cols and "Team" in df_task.columns:
@@ -219,6 +245,11 @@ def main():
 
                         caption_text = f"ការងារត្រូវមិនទាន់ធ្វើ {team} ({task_title})" if is_morning else f"ការងារសរុប {team} ({task_title})"
                         client.send_file(chat_id, img_detail_path, caption=f"{caption_text} - {shift_title}")
+
+                        if is_morning:
+                            pending_text = build_pending_list_text(df_single_team, team, task_title)
+                            if pending_text:
+                                client.send_message(chat_id, pending_text)
                     else:
                         print(f"ℹ️ '{task_code}' / team '{team}': no pending items (all approved or no data) — skipped, no image sent.")
             else:
