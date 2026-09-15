@@ -17,7 +17,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install telethon gspread google-auth pandas dataframe_image html2image requests deep-translator
+          pip install telethon gspread google-auth pandas dataframe_image html2image requests
           sudo apt-get update
           sudo apt-get install -y chromium-browser
       - name: Run Report Script
