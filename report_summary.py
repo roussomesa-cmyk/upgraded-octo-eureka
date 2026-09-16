@@ -243,7 +243,7 @@ def main():
                         img_detail_path = f"detail_{task_code}_{team}.png"
                         dfi.export(styled_detail.hide(axis="index"), img_detail_path, max_rows=-1)
 
-                        caption_text = f"ការងារត្រូវមិនទាន់ធ្វើ {team} ({task_title})" if is_morning else f"ការងារសរុប {team} ({task_title})"
+                        caption_text = f"ការងារមិនទាន់ធ្វើ {team} ({task_title})" if is_morning else f"ការងារសរុប {team} ({task_title})"
                         full_caption = f"{caption_text} - {shift_title}"
 
                         # ⬅️ ពេលព្រឹក៖ បញ្ចូលបញ្ជីការងារមិនទាន់ធ្វើទៅក្នុង caption ដដែល (សារតែមួយ)
