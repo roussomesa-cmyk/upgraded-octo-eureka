@@ -23,7 +23,7 @@ OUTPUT_SHEET_NAME = os.environ.get("OUTPUT_SHEET_NAME") or "Fuel Monitor Log"
 
 COMMAND_PREFIX = "/mn"
 RESPONSE_TIMEOUT_SEC = 20
-DELAY_BETWEEN_CODES_SEC = 180  # ⬅️ ៣ នាទី រវាងការសួរម្តងៗ
+DELAY_BETWEEN_CODES_SEC = 180
 
 OUTPUT_HEADERS = [
     "Timestamp", "Station Code (Requested)", "Station Code (Reply)", "Vendor",
@@ -161,7 +161,9 @@ async def main():
             try:
                 async with client.conversation(STATION_GROUP_ID, timeout=RESPONSE_TIMEOUT_SEC) as conv:
                     await conv.send_message(command_text)
-                    response = await conv.get_response()
+                    # ⬅️ ប្រើ get_reply() ជំនួស get_response() ដើម្បីចាប់យកតែចម្លើយ
+                    # ដែលជា Reply ទៅ command របស់យើងផ្ទាល់ (ជៀសវាងចម្លើយឆ្លាស់គ្នាក្នុង Group កកកុញ)
+                    response = await conv.get_reply()
                     reply_text = response.raw_text
             except Exception as e:
                 print(f"⚠️ No reply / error for '{code}': {e}")
