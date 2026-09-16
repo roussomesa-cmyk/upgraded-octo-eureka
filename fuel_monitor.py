@@ -119,6 +119,23 @@ def get_or_create_output_worksheet(gc):
     return ws
 
 
+async def append_row_with_retry(ws, row, max_attempts=3):
+    """សរសេរជួរចូល Google Sheet ដោយព្យាយាមម្តងទៀតបើមាន error បណ្តោះអាសន្ន (502/503/timeout)."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            ws.append_row(row)
+            return True
+        except Exception as e:
+            print(f"⚠️ Sheet write attempt {attempt} failed: {e}")
+            if attempt < max_attempts:
+                wait_sec = 10 * attempt
+                print(f"   Retrying in {wait_sec}s...")
+                await asyncio.sleep(wait_sec)
+            else:
+                print(f"❌ Sheet write failed after {max_attempts} attempts — skipping this row, continuing to next station.")
+                return False
+
+
 async def main():
     api_id_raw = os.environ.get("TELEGRAM_API_ID")
     api_hash = os.environ.get("TELEGRAM_API_HASH")
@@ -161,8 +178,6 @@ async def main():
             try:
                 async with client.conversation(STATION_GROUP_ID, timeout=RESPONSE_TIMEOUT_SEC) as conv:
                     await conv.send_message(command_text)
-                    # ⬅️ ប្រើ get_reply() ជំនួស get_response() ដើម្បីចាប់យកតែចម្លើយ
-                    # ដែលជា Reply ទៅ command របស់យើងផ្ទាល់ (ជៀសវាងចម្លើយឆ្លាស់គ្នាក្នុង Group កកកុញ)
                     response = await conv.get_reply()
                     reply_text = response.raw_text
             except Exception as e:
@@ -170,13 +185,13 @@ async def main():
 
             if not reply_text:
                 row = [timestamp, code, "", "", "", "", "", "", "", "", "", "", "", "", "", "", "NO REPLY"]
-                ws.append_row(row)
+                await append_row_with_retry(ws, row)
                 await asyncio.sleep(DELAY_BETWEEN_CODES_SEC)
                 continue
 
             parsed = parse_bot_reply(reply_text)
             row = [timestamp, code] + [parsed.get(col, "") for col in OUTPUT_HEADERS[2:-1]] + ["OK"]
-            ws.append_row(row)
+            await append_row_with_retry(ws, row)
 
             fuel_level_raw = parsed.get("Fuel Level(%)", "")
             try:
@@ -187,8 +202,11 @@ async def main():
             if fuel_level_val is not None and fuel_level_val == 0.0:
                 alert_msg = f"⚠️ Fuel Level = 0.0% សម្រាប់ Station: {code}\n{reply_text}"
                 if FUEL_ALERT_GROUP_ID:
-                    await client.send_message(FUEL_ALERT_GROUP_ID, alert_msg)
-                    print(f"🚨 Fuel alert sent for '{code}'.")
+                    try:
+                        await client.send_message(FUEL_ALERT_GROUP_ID, alert_msg)
+                        print(f"🚨 Fuel alert sent for '{code}'.")
+                    except Exception as e:
+                        print(f"⚠️ Failed to send fuel alert for '{code}': {e}")
                 else:
                     print(f"🚨 Fuel Level = 0 for '{code}' but FUEL_ALERT_GROUP_ID not set — alert NOT sent.")
 
