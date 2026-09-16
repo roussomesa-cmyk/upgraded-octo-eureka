@@ -244,12 +244,15 @@ def main():
                         dfi.export(styled_detail.hide(axis="index"), img_detail_path, max_rows=-1)
 
                         caption_text = f"ការងារត្រូវមិនទាន់ធ្វើ {team} ({task_title})" if is_morning else f"ការងារសរុប {team} ({task_title})"
-                        client.send_file(chat_id, img_detail_path, caption=f"{caption_text} - {shift_title}")
+                        full_caption = f"{caption_text} - {shift_title}"
 
+                        # ⬅️ ពេលព្រឹក៖ បញ្ចូលបញ្ជីការងារមិនទាន់ធ្វើទៅក្នុង caption ដដែល (សារតែមួយ)
                         if is_morning:
                             pending_text = build_pending_list_text(df_single_team, team, task_title)
                             if pending_text:
-                                client.send_message(chat_id, pending_text)
+                                full_caption = f"{full_caption}\n\n{pending_text}"
+
+                        client.send_file(chat_id, img_detail_path, caption=full_caption)
                     else:
                         print(f"ℹ️ '{task_code}' / team '{team}': no pending items (all approved or no data) — skipped, no image sent.")
             else:
