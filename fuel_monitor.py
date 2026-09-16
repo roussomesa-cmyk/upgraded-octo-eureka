@@ -3,7 +3,6 @@ import io
 import json
 import os
 import re
-import time
 from datetime import datetime, timezone, timedelta
 
 import gspread
@@ -13,7 +12,6 @@ from google.oauth2.service_account import Credentials
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-# ---------- ការកំណត់ពី GitHub Secrets ----------
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID") or "1PmMSqfeBWhYJe5dMv3PrLOFKc2YmLYP8BdCvf9FyZX4"
 STATION_GROUP_ID = int(os.environ.get("STATION_GROUP_ID") or "0")
 FUEL_ALERT_GROUP_ID_RAW = os.environ.get("FUEL_ALERT_GROUP_ID")
@@ -25,7 +23,7 @@ OUTPUT_SHEET_NAME = os.environ.get("OUTPUT_SHEET_NAME") or "Fuel Monitor Log"
 
 COMMAND_PREFIX = "/mn"
 RESPONSE_TIMEOUT_SEC = 20
-DELAY_BETWEEN_CODES_SEC = 4
+DELAY_BETWEEN_CODES_SEC = 180  # ⬅️ ៣ នាទី រវាងការសួរម្តងៗ
 
 OUTPUT_HEADERS = [
     "Timestamp", "Station Code (Requested)", "Station Code (Reply)", "Vendor",
