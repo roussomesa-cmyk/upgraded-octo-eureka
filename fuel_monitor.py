@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import os
@@ -9,8 +10,8 @@ import gspread
 import pandas as pd
 import requests
 from google.oauth2.service_account import Credentials
+from telethon import TelegramClient
 from telethon.sessions import StringSession
-from telethon.sync import TelegramClient
 
 # ---------- ការកំណត់ពី GitHub Secrets ----------
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID") or "1PmMSqfeBWhYJe5dMv3PrLOFKc2YmLYP8BdCvf9FyZX4"
@@ -120,7 +121,7 @@ def get_or_create_output_worksheet(gc):
     return ws
 
 
-def main():
+async def main():
     api_id_raw = os.environ.get("TELEGRAM_API_ID")
     api_hash = os.environ.get("TELEGRAM_API_HASH")
     session_str = os.environ.get("TELEGRAM_SESSION")
@@ -149,7 +150,10 @@ def main():
 
     cambodia_tz = timezone(timedelta(hours=7))
 
-    with TelegramClient(StringSession(session_str), api_id, api_hash) as client:
+    client = TelegramClient(StringSession(session_str), api_id, api_hash)
+    await client.start()
+
+    try:
         for code in station_codes:
             timestamp = datetime.now(cambodia_tz).strftime("%Y-%m-%d %H:%M:%S")
             command_text = f"{COMMAND_PREFIX} {code}"
@@ -157,9 +161,9 @@ def main():
 
             reply_text = None
             try:
-                with client.conversation(STATION_GROUP_ID, timeout=RESPONSE_TIMEOUT_SEC) as conv:
-                    conv.send_message(command_text)
-                    response = conv.get_response()
+                async with client.conversation(STATION_GROUP_ID, timeout=RESPONSE_TIMEOUT_SEC) as conv:
+                    await conv.send_message(command_text)
+                    response = await conv.get_response()
                     reply_text = response.raw_text
             except Exception as e:
                 print(f"⚠️ No reply / error for '{code}': {e}")
@@ -167,7 +171,7 @@ def main():
             if not reply_text:
                 row = [timestamp, code, "", "", "", "", "", "", "", "", "", "", "", "", "", "", "NO REPLY"]
                 ws.append_row(row)
-                time.sleep(DELAY_BETWEEN_CODES_SEC)
+                await asyncio.sleep(DELAY_BETWEEN_CODES_SEC)
                 continue
 
             parsed = parse_bot_reply(reply_text)
@@ -183,15 +187,17 @@ def main():
             if fuel_level_val is not None and fuel_level_val == 0.0:
                 alert_msg = f"⚠️ Fuel Level = 0.0% សម្រាប់ Station: {code}\n{reply_text}"
                 if FUEL_ALERT_GROUP_ID:
-                    client.send_message(FUEL_ALERT_GROUP_ID, alert_msg)
+                    await client.send_message(FUEL_ALERT_GROUP_ID, alert_msg)
                     print(f"🚨 Fuel alert sent for '{code}'.")
                 else:
                     print(f"🚨 Fuel Level = 0 for '{code}' but FUEL_ALERT_GROUP_ID not set — alert NOT sent.")
 
-            time.sleep(DELAY_BETWEEN_CODES_SEC)
+            await asyncio.sleep(DELAY_BETWEEN_CODES_SEC)
+    finally:
+        await client.disconnect()
 
     print("✅ Fuel monitor run completed.")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
