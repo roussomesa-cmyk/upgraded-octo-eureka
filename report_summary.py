@@ -136,7 +136,7 @@ def style_overall_summary(df, title):
     return styler.apply(apply_total_style, axis=1)
 
 def build_pending_list_text(df_single_team, team, task_title):
-    """រាយ Site name (+ Serial បើមាន) នៃការងារមិនទាន់ធ្វើ ជាអត្ថបទ."""
+    """រាយ Site name (+ Serial បើមាន) នៃការងារមិនទាន់ធ្វើ ជាអត្ថបទ (គ្មានចំណងជើងស្ទួន)."""
     if "Site name" not in df_single_team.columns:
         return None
     has_serial = "Serial" in df_single_team.columns
@@ -158,9 +158,7 @@ def build_pending_list_text(df_single_team, team, task_title):
     if not lines_data:
         return None
 
-    lines = [f"បញ្ជីការងារមិនទាន់ធ្វើ — {team} ({task_title}):", ""]
-    lines += lines_data
-    return "\n".join(lines)
+    return "\n".join(lines_data)
 
 def main():
     api_id_raw = os.environ.get("TELEGRAM_API_ID")
@@ -243,10 +241,9 @@ def main():
                         img_detail_path = f"detail_{task_code}_{team}.png"
                         dfi.export(styled_detail.hide(axis="index"), img_detail_path, max_rows=-1)
 
-                        caption_text = f"ការងារមិនទាន់ធ្វើ {team} ({task_title})" if is_morning else f"ការងារសរុប {team} ({task_title})"
+                        caption_text = f"ការងារត្រូវមិនទាន់ធ្វើ {team} ({task_title})" if is_morning else f"ការងារសរុប {team} ({task_title})"
                         full_caption = f"{caption_text} - {shift_title}"
 
-                        # ⬅️ ពេលព្រឹក៖ បញ្ចូលបញ្ជីការងារមិនទាន់ធ្វើទៅក្នុង caption ដដែល (សារតែមួយ)
                         if is_morning:
                             pending_text = build_pending_list_text(df_single_team, team, task_title)
                             if pending_text:
