@@ -228,8 +228,14 @@ def main():
                 if "Site name" in df_detail.columns:
                     df_detail = df_detail[df_detail["Site name"].notna() & (~df_detail["Site name"].astype(str).str.strip().str.lower().isin(["", "nan", "none", "#n/a", "n/a"]))]
 
-                if is_morning and "Result" in df_detail.columns:
-                    df_detail = df_detail[df_detail["Result"].astype(str).str.strip().str.lower() != "approved"]
+                # ពេលព្រឹក៖ ត្រូវការ column "Result" ដើម្បីដឹងច្បាស់ថា site ណាមិនទាន់ approve
+                # បើ column នេះបាត់ (header ទទេក្នុង Sheet) កុំផ្ញើទិន្នន័យខុស — ស្រង់ចេញឲ្យទទេវិញ ហើយ log ព្រមាន
+                if is_morning:
+                    if "Result" in df_detail.columns:
+                        df_detail = df_detail[df_detail["Result"].astype(str).str.strip().str.lower() != "approved"]
+                    else:
+                        print(f"⚠️ '{task_code}': 'Result' column is missing/empty header — cannot determine approval status. Skipping morning detail images for this sheet to avoid sending incorrect data. Please add a 'Result' header in this sheet.")
+                        df_detail = df_detail.iloc[0:0]
 
                 df_detail = df_detail.fillna("")
                 df_detail = df_detail.replace(to_replace=r"^(?i:nan|none|#n/a|n/a)$", value="", regex=True)
