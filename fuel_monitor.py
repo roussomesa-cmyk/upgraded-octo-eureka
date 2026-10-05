@@ -334,6 +334,16 @@ def build_summary_report(gc):
     print(f"✅ Summary Report បានបង្កើត ({len(teams)} Teams)")
 
 
+def run_reports(gc):
+    """Report ជា formula ផ្ទាល់ ដូច្នេះបង្កើតម្ដងក៏បាន — ទិន្នន័យនឹងធ្វើបច្ចុប្បន្នភាពដោយខ្លួនឯង."""
+    for name, fn in (("Weekly Report", build_weekly_report),
+                     ("Summary Report", build_summary_report)):
+        try:
+            fn(gc)
+        except Exception as e:
+            print(f"❌ {name} FAILED: {type(e).__name__}: {e}")
+
+
 # ============================== MAIN ==============================
 async def main():
     api_id_raw = os.environ.get("TELEGRAM_API_ID")
@@ -362,6 +372,7 @@ async def main():
 
     gc = get_sheets_client()
     ws = get_or_create_output_worksheet(gc)
+    run_reports(gc)   # បង្កើត Report មុន (កុំរង់ចាំ loop វែង)
 
     cambodia_tz = timezone(timedelta(hours=7))
 
@@ -407,14 +418,15 @@ async def main():
         await client.disconnect()
 
     # Report → សរសេរក្នុង Google Sheet ប៉ុណ្ណោះ (មិនផ្ញើ Telegram)
-    try:
-        build_weekly_report(gc)
-        build_summary_report(gc)
-    except Exception as e:
-        print(f"⚠️ Report build failed: {e}")
+    run_reports(gc)
 
     print("✅ Fuel monitor run completed.")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "report":
+        # python fuel_monitor.py report  → បង្កើតតែ Report (មិនប្រើ Telegram)
+        run_reports(get_sheets_client())
+    else:
+        asyncio.run(main())
