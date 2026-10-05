@@ -201,147 +201,171 @@ async def send_fuel_alert(client, code, fuel_val, reply_text, team_info):
             print(f"⚠️ Failed to send alert for '{code}' to {gid}: {e}")
 
 
-# ============================ WEEKLY REPORT ============================
-def get_or_create_report_worksheet(gc):
-    sh = gc.open_by_key(SPREADSHEET_ID)
+# ============================ REPORTS (Python គណនា រួចសរសេរតម្លៃចូល Sheet) ============================
+def _load_team_map(sh, team_info):
+    """Site -> Team ពី sheet allteam (A=Site, B=Team); បើអត់មានប្រើ Stock code ពី List Site."""
+    tmap = {}
     try:
-        ws = sh.worksheet(REPORT_SHEET_NAME)
+        for r in sh.worksheet(TEAM_LIST_SHEET).get_all_values()[1:]:
+            if len(r) > 1 and r[0].strip() and r[1].strip():
+                tmap.setdefault(r[0].strip(), r[1].strip())
+    except Exception as e:
+        print(f"⚠️ មិនអាចអាន sheet '{TEAM_LIST_SHEET}': {e}")
+    for site, i in (team_info or {}).items():
+        if i.get("team"):
+            tmap.setdefault(site, i["team"])
+    return tmap
+
+
+def _parse_date(text):
+    text = text.lstrip("'").strip()
+    for fmt, n in (("%Y-%m-%d", 10), ("%m/%d/%Y", None), ("%d/%m/%Y", None)):
+        try:
+            return datetime.strptime(text[:10] if n else text.split(" ")[0], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _read_log(sh, year, month):
+    rows = sh.worksheet(OUTPUT_SHEET_NAME).get_all_values()
+    out = []
+    for r in rows:
+        r = r + [""] * (17 - len(r))
+        if r[16].strip() != "OK":
+            continue
+        d = _parse_date(r[0])
+        if not d or (d.year, d.month) != (year, month):
+            continue
+        try:
+            fuel = float(r[6])
+        except ValueError:
+            fuel = None
+        out.append({"date": d, "site": r[1].strip(), "fuel": fuel,
+                    "fuel_raw": r[6], "batt": r[7]})
+    out.sort(key=lambda x: (x["date"], x["site"]))
+    return out
+
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return v
+
+
+def _get_ws(sh, name, rows=1000, cols=30):
+    try:
+        return sh.worksheet(name)
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=REPORT_SHEET_NAME, rows=1000, cols=28)
-    return ws
+        return sh.add_worksheet(title=name, rows=rows, cols=cols)
 
 
-def build_weekly_report(gc, year=None, month=None):
-    """សរសេរចូល Google Sheet ប៉ុណ្ណោះ — មិនផ្ញើ Telegram."""
-    ws = get_or_create_report_worksheet(gc)
-    now = datetime.now(timezone(timedelta(hours=7)))
-    year, month = year or now.year, month or now.month
+def _write_grid(ws, grid):
+    width = max(len(r) for r in grid)
+    grid = [r + [""] * (width - len(r)) for r in grid]
+    if ws.row_count < len(grid) + 5 or ws.col_count < width:
+        ws.resize(rows=max(len(grid) + 20, 100), cols=max(width, 10))
+    ws.clear()
+    ws.update(values=grid, range_name="A1", value_input_option="RAW")
+
+
+def build_weekly_report(sh, data, tmap, year, month):
     last_day = calendar.monthrange(year, month)[1]
-
     ranges = [(1, 7), (8, 14), (15, 21), (22, last_day)]
-    log = f"'{OUTPUT_SHEET_NAME}'"
-    updates = []
-
+    tables = []
     for w, (d1, d2) in enumerate(ranges):
-        c0 = 1 + w * 7
-        col = lambda off, c0=c0: rowcol_to_a1(1, c0 + off)[:-1]
-        start = f"${col(1)}$2"
-        end = f"${col(3)}$2"
+        rows = [x for x in data if min((x["date"].day - 1) // 7, 3) == w]
+        t = [[f"សប្ដាហ៍ទី {w + 1}"],
+             ["From", f"{year}-{month:02d}-{d1:02d}", "To", f"{year}-{month:02d}-{d2:02d}"],
+             REPORT_HEADERS]
+        for x in rows:
+            if x["fuel"] is None:
+                remark = "គ្មានទិន្នន័យ" if x["fuel_raw"].strip() else ""
+            elif x["fuel"] == 0:
+                remark = "Fuel អស់"
+            elif x["fuel"] <= LOW_FUEL_THRESHOLD:
+                remark = "Fuel ទាប"
+            else:
+                remark = ""
+            t.append([x["date"].strftime("%Y-%m-%d"), x["site"], tmap.get(x["site"], "N/A"),
+                      x["fuel"] if x["fuel"] is not None else x["fuel_raw"],
+                      _num(x["batt"]), remark])
+        tables.append(t)
 
-        cond = (
-            f"(IFERROR(DATEVALUE(LEFT({log}!$A$2:$A,10)),0)>={start})*"
-            f"(IFERROR(DATEVALUE(LEFT({log}!$A$2:$A,10)),0)<={end})*"
-            f"({log}!$Q$2:$Q=\"OK\")"
-        )
-        site, fuel = f"{col(1)}4:{col(1)}", f"{col(3)}4:{col(3)}"
+    height = max(len(t) for t in tables)
+    grid = []
+    for i in range(height):
+        row = []
+        for t in tables:
+            cells = (t[i] if i < len(t) else [])
+            cells = cells + [""] * (6 - len(cells))
+            row += cells + [""]          # column ទំនេរមួយខណ្ឌចែក
+        grid.append(row)
 
-        f_date_site = (f"=IFERROR(FILTER({{ARRAYFORMULA(LEFT({log}!$A$2:$A,10)),"
-                       f"{log}!$B$2:$B}},{cond}),\"\")")
-        f_team = (f"=ARRAYFORMULA(IF({site}=\"\",\"\","
-                  f"IFERROR(VLOOKUP({site},{TEAM_RANGE},2,FALSE),\"N/A\")))")
-        f_fuel = f"=IFERROR(FILTER({log}!$G$2:$G,{cond}),\"\")"
-        f_batt = f"=IFERROR(FILTER({log}!$H$2:$H,{cond}),\"\")"
-        f_remark = (f"=ARRAYFORMULA(IF({site}=\"\",\"\","
-                    f"IF(IFERROR(VALUE({fuel}),99)=0,\"Fuel អស់\","
-                    f"IF(IFERROR(VALUE({fuel}),99)<={LOW_FUEL_THRESHOLD},\"Fuel ទាប\",\"\"))))")
-
-        def put(row, off, val, c0=c0):
-            updates.append({"range": rowcol_to_a1(row, c0 + off), "values": [[val]]})
-
-        put(1, 0, f"សប្ដាហ៍ទី {w + 1}")
-        put(2, 0, "From"); put(2, 1, f"{year}-{month:02d}-{d1:02d}")
-        put(2, 2, "To");   put(2, 3, f"{year}-{month:02d}-{d2:02d}")
-        for i, h in enumerate(REPORT_HEADERS):
-            put(3, i, h)
-        put(4, 0, f_date_site)
-        put(4, 2, f_team)
-        put(4, 3, f_fuel)
-        put(4, 4, f_batt)
-        put(4, 5, f_remark)
-
-    ws.batch_update(updates, value_input_option=ValueInputOption.user_entered)
-    print(f"✅ Weekly Report បានបង្កើត/ធ្វើបច្ចុប្បន្នភាព ({year}-{month:02d})")
-
-
-# ============================ SUMMARY REPORT ============================
-def _col_letter(col_idx):
-    return rowcol_to_a1(1, col_idx)[:-1]
-
-
-def build_summary_report(gc):
-    """សរុប Team ណាមានម៉ាស៊ីនប្រេងក្រោម 20% — សរសេរចូល Sheet ប៉ុណ្ណោះ."""
-    sh = gc.open_by_key(SPREADSHEET_ID)
+    ws = _get_ws(sh, REPORT_SHEET_NAME, rows=max(height + 20, 200), cols=28)
+    _write_grid(ws, grid)
     try:
-        ws = sh.worksheet(SUMMARY_SHEET_NAME)
-        ws.clear()
-    except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=SUMMARY_SHEET_NAME, rows=200, cols=10)
-
-    raw = sh.worksheet(TEAM_LIST_SHEET).col_values(TEAM_LIST_COL)[1:]
-    teams = list(dict.fromkeys(t.strip() for t in raw if t.strip()))
-
-    R = f"'{REPORT_SHEET_NAME}'!"
-
-    def rng(week, off):   # off: 1=Site, 2=Team, 3=Fuel
-        c = _col_letter(1 + week * 7 + off)
-        return f"{R}{c}$4:{c}$1000"
-
-    def fuel_ok(fuel_range):
-        return f"ARRAYFORMULA(IFERROR(VALUE({fuel_range}),999)<$B$2)"
-
-    all_site = "{" + ";".join(rng(w, 1) for w in range(4)) + "}"
-    all_team = "{" + ";".join(rng(w, 2) for w in range(4)) + "}"
-    all_fuel = "{" + ";".join(rng(w, 3) for w in range(4)) + "}"
-
-    headers = ["Team", "សប្ដាហ៍ទី 1", "សប្ដាហ៍ទី 2", "សប្ដាហ៍ទី 3", "សប្ដាហ៍ទី 4",
-               "សរុប (Site មិនស្ទួន)", "បញ្ជី Site ក្រោម 20%"]
-    cells = [
-        {"range": "A1", "values": [["សរុបចំនួនម៉ាស៊ីនដែលប្រេងទាប តាម Team"]]},
-        {"range": "A2:B2", "values": [["ក្រោម (%)", SUMMARY_THRESHOLD]]},
-        {"range": "A4:G4", "values": [headers]},
-    ]
-
-    first = 5
-    for i, team in enumerate(teams):
-        r = first + i
-        row = [team]
         for w in range(4):
-            row.append(
-                f"=IFERROR(COUNTA(UNIQUE(FILTER({rng(w,1)},"
-                f"{rng(w,2)}=$A{r},{fuel_ok(rng(w,3))}))),0)"
-            )
-        row.append(
-            f"=IFERROR(COUNTA(UNIQUE(FILTER({all_site},"
-            f"{all_team}=$A{r},{fuel_ok(all_fuel)}))),0)"
-        )
-        row.append(
-            f"=IFERROR(TEXTJOIN(\", \",TRUE,UNIQUE(FILTER({all_site},"
-            f"{all_team}=$A{r},{fuel_ok(all_fuel)}))),\"\")"
-        )
-        cells.append({"range": f"A{r}:G{r}", "values": [row]})
+            c0 = w * 7
+            hdr = f"{rowcol_to_a1(3, c0 + 1)}:{rowcol_to_a1(3, c0 + 6)}"
+            ws.format(hdr, {"textFormat": {"bold": True},
+                            "backgroundColor": {"red": 0.2, "green": 0.65, "blue": 0.55}})
+            ws.format(rowcol_to_a1(1, c0 + 1), {"textFormat": {"bold": True, "fontSize": 12}})
+    except Exception as e:
+        print(f"ℹ️ format skipped: {e}")
+    print(f"✅ Weekly Report បានបង្កើត ({len(data)} ជួរ, {year}-{month:02d})")
 
-    last = first + len(teams) - 1
-    tot = last + 1
-    total_row = ["សរុបទាំងអស់"] + [f"=SUM({_col_letter(c)}{first}:{_col_letter(c)}{last})"
-                                    for c in range(2, 7)] + [""]
-    cells.append({"range": f"A{tot}:G{tot}", "values": [total_row]})
 
-    ws.batch_update(cells, value_input_option=ValueInputOption.user_entered)
-    ws.format("A4:G4", {"textFormat": {"bold": True},
-                        "backgroundColor": {"red": 0.2, "green": 0.65, "blue": 0.55}})
-    ws.format(f"A{tot}:G{tot}", {"textFormat": {"bold": True}})
-    ws.format("A1", {"textFormat": {"bold": True, "fontSize": 13}})
+def build_summary_report(sh, data, tmap):
+    teams = sorted(set(tmap.values()))
+    for x in data:                       # ធានាថា Team ទាំងអស់ក្នុងទិន្នន័យមាន
+        t = tmap.get(x["site"], "N/A")
+        if t not in teams:
+            teams.append(t)
+
+    low = [x for x in data if x["fuel"] is not None and x["fuel"] < SUMMARY_THRESHOLD]
+    grid = [["សរុបចំនួនម៉ាស៊ីនដែលប្រេងទាប តាម Team"],
+            ["ក្រោម (%)", SUMMARY_THRESHOLD],
+            [],
+            ["Team", "សប្ដាហ៍ទី 1", "សប្ដាហ៍ទី 2", "សប្ដាហ៍ទី 3", "សប្ដាហ៍ទី 4",
+             f"សរុប (Site មិនស្ទួន)", f"បញ្ជី Site ក្រោម {SUMMARY_THRESHOLD}%"]]
+    sums = [0, 0, 0, 0, 0]
+    for team in teams:
+        mine = [x for x in low if tmap.get(x["site"], "N/A") == team]
+        weeks = [len({x["site"] for x in mine if min((x["date"].day - 1) // 7, 3) == w})
+                 for w in range(4)]
+        sites = sorted({x["site"] for x in mine})
+        grid.append([team] + weeks + [len(sites), ", ".join(sites)])
+        for i, v in enumerate(weeks + [len(sites)]):
+            sums[i] += v
+    grid.append(["សរុបទាំងអស់"] + sums + [""])
+
+    ws = _get_ws(sh, SUMMARY_SHEET_NAME, rows=200, cols=10)
+    _write_grid(ws, grid)
+    try:
+        ws.format("A4:G4", {"textFormat": {"bold": True},
+                            "backgroundColor": {"red": 0.2, "green": 0.65, "blue": 0.55}})
+        ws.format(f"A{len(grid)}:G{len(grid)}", {"textFormat": {"bold": True}})
+        ws.format("A1", {"textFormat": {"bold": True, "fontSize": 13}})
+    except Exception as e:
+        print(f"ℹ️ format skipped: {e}")
     print(f"✅ Summary Report បានបង្កើត ({len(teams)} Teams)")
 
 
-def run_reports(gc):
-    """Report ជា formula ផ្ទាល់ ដូច្នេះបង្កើតម្ដងក៏បាន — ទិន្នន័យនឹងធ្វើបច្ចុប្បន្នភាពដោយខ្លួនឯង."""
-    for name, fn in (("Weekly Report", build_weekly_report),
-                     ("Summary Report", build_summary_report)):
-        try:
-            fn(gc)
-        except Exception as e:
-            print(f"❌ {name} FAILED: {type(e).__name__}: {e}")
+def run_reports(gc, team_info=None):
+    """Report សរសេរចូល Google Sheet ប៉ុណ្ណោះ — មិនផ្ញើ Telegram."""
+    try:
+        sh = gc.open_by_key(SPREADSHEET_ID)
+        now = datetime.now(timezone(timedelta(hours=7)))
+        if team_info is None:
+            team_info = fetch_team_info()
+        tmap = _load_team_map(sh, team_info)
+        data = _read_log(sh, now.year, now.month)
+        build_weekly_report(sh, data, tmap, now.year, now.month)
+        build_summary_report(sh, data, tmap)
+    except Exception as e:
+        print(f"❌ Report FAILED: {type(e).__name__}: {e}")
 
 
 # ============================== MAIN ==============================
@@ -372,7 +396,7 @@ async def main():
 
     gc = get_sheets_client()
     ws = get_or_create_output_worksheet(gc)
-    run_reports(gc)   # បង្កើត Report មុន (កុំរង់ចាំ loop វែង)
+    run_reports(gc, team_info)   # បង្កើត Report មុន
 
     cambodia_tz = timezone(timedelta(hours=7))
 
@@ -413,12 +437,15 @@ async def main():
             if fuel_level_val is not None and fuel_level_val <= FUEL_ALERT_THRESHOLD:
                 await send_fuel_alert(client, code, fuel_level_val, reply_text, team_info)
 
+            # ធ្វើបច្ចុប្បន្នភាព Report ក្រោយរាល់ Site (សរសេរតែក្នុង Sheet)
+            run_reports(gc, team_info)
+
             await asyncio.sleep(DELAY_BETWEEN_CODES_SEC)
     finally:
         await client.disconnect()
 
     # Report → សរសេរក្នុង Google Sheet ប៉ុណ្ណោះ (មិនផ្ញើ Telegram)
-    run_reports(gc)
+    run_reports(gc, team_info)
 
     print("✅ Fuel monitor run completed.")
 
