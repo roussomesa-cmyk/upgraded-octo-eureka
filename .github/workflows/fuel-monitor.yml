@@ -1,6 +1,12 @@
 name: Fuel Monitor Automation
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "full = ផ្ញើ /mn ទាំងអស់ + Report, report = បង្កើតតែ Report"
+        type: choice
+        options: [full, report]
+        default: full
 jobs:
   run-fuel-monitor:
     runs-on: ubuntu-latest
@@ -24,4 +30,9 @@ jobs:
           GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
           STATION_GROUP_ID: ${{ secrets.STATION_GROUP_ID }}
           FUEL_ALERT_GROUP_ID: ${{ secrets.FUEL_ALERT_GROUP_ID }}
-        run: python fuel_monitor.py
+        run: |
+          if [ "${{ inputs.mode }}" = "report" ]; then
+            python -u fuel_monitor.py report
+          else
+            python -u fuel_monitor.py
+          fi
