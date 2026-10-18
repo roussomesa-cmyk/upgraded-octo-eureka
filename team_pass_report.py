@@ -3,22 +3,15 @@ team_pass_report.py - Report Power CHA2026 (រត់ដោយដៃ ដាច�
 
 File នេះមិនប៉ះពាល់កូដ Morning/Evening Shift ចាស់ទេ។ រត់ម្តងមួយ Mode ដោយដៃ៖
 
-  python team_pass_report.py daily  [--date 2026-10-17]   # របាយការណ៍ប្រចាំថ្ងៃ ទៅក្រុមធីមនីមួយៗ
+  python team_pass_report.py daily  [--date 2026-10-17]   # របាយការណ៍ប្រចាំថ្ងៃ ជារូបភាពតារាង ទៅក្រុមធីមនីមួយៗ
   python team_pass_report.py weekly [--week 2]            # សរុបសប្តាហ៍ ៧ធីម Pass / Not Pass
   python team_pass_report.py final                        # សរុបរួមទាំង ៤សប្តាហ៍
 
 ជម្រើសរួម៖
   --dry-run          បង្ហាញលទ្ធផលក្នុង Terminal តែមិនផ្ញើ Telegram (មិនត្រូវការ TELEGRAM_* ទេ)
-  --test-chat ID     ផ្ញើសារទាំងអស់ទៅ Chat ID នេះតែមួយ (សម្រាប់សាកល្បង)
-  --no-teams         មិនផ្ញើទៅក្រុមធីម (weekly/final៖ ក្រុមធីមទទួលលទ្ធផលខ្លួនឯង, មែនគ្រុបទទួលសរុប ៧ធីម)
-  --no-main          មិនផ្ញើទៅ MAIN_GROUP_ID (weekly/final)
-
-ច្បាប់ Pass:
-  - ការងារសរុបរបស់ធីម (ជួរទាំងអស់ក្នុង Tab ការងារ) បែងចែកជា ៤សប្តាហ៍ស្មើគ្នា (សល់ដាក់សប្តាហ៍ដំបូងៗ)
-  - សប្តាហ៍ណា Approved (តាមកាលបរិច្ឆេទក្នុង "Last date record") >= ចំនួនត្រូវធ្វើក្នុងសប្តាហ៍នោះ => Pass
-  - សរុប ៤សប្តាហ៍៖ Approved ទាំងអស់ (រាប់ទាំងគ្មានកាលបរិច្ឆេទ) >= ការងារសរុប => Pass
-
-Environment (ដូចកូដចាស់)៖ TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION
+  --test-chat ID      ផ្ញើសារទាំងអស់ទៅ Chat ID នេះតែមួយ (សម្រាប់សាកល្បង)
+  --no-teams          មិនផ្ញើទៅក្រុមធីម
+  --no-main           មិនផ្ញើទៅ MAIN_GROUP_ID (weekly/final)
 """
 import argparse
 import io
@@ -35,7 +28,7 @@ MAIN_GROUP_ID = int(os.environ.get("NOTIFY_GROUP_ID") or "-1001853372580")
 VALID_TEAMS = [f"CHA-T0{i}" for i in range(1, 8)]
 CAMBODIA_TZ = timezone(timedelta(hours=7))
 
-# ៤សប្តាហ៍ (កែបាន) - សប្តាហ៍ទី 1-3 ដូច Tab "Weekly Report"
+# ៤សប្តាហ៍ (កែបាន)
 WEEKS = [
     {"label": "សប្តាហ៍ទី 1", "start": date(2026, 10, 1), "end": date(2026, 10, 7)},
     {"label": "សប្តាហ៍ទី 2", "start": date(2026, 10, 8), "end": date(2026, 10, 14)},
@@ -138,7 +131,6 @@ def load_mappings():
 
 
 def parse_date(val, lo, hi):
-    """បម្លែង 'Last date record' ជា date។ ជួសជុលថ្ងៃ/ខែដែលប្តូរគ្នា ដោយជ្រើសកាលបរិច្ឆេទដែលស្ថិតក្នុង [lo, hi]។"""
     s = str(val).strip()
     if s.lower() in NA_VALUES:
         return None
@@ -166,11 +158,10 @@ def parse_date(val, lo, hi):
 
 
 def load_log_dates(lo, hi):
-    """អាន Tab 'Approved_Log' (ដែល Apps Script កត់រាល់ម៉ោង) => {(task, site, team): [date|None, ...]}។"""
     df = fetch_csv("Approved_Log")
     out = {}
     if df is None or df.empty:
-        print("ℹ️ មិនមាន Tab Approved_Log ឬទទេ (ត្រូវរត់ DailyApprovedLog ក្នុង Apps Script)")
+        print("ℹ️ មិនមាន Tab Approved_Log ឬទទេ")
         return out
     date_col = "Date text" if "Date text" in df.columns else ("Detected at" if "Detected at" in df.columns else None)
     need = {"Team", "Task code", "Site"}
@@ -184,12 +175,10 @@ def load_log_dates(lo, hi):
 
 
 def collect_tasks(task_codes, lo, hi, log_dates=None):
-    """បង្កើតតារាងតែមួយ៖ Task, Team, Site, Approved(bool), Date(date|None)។"""
     frames = []
     for code in task_codes:
         df = fetch_csv(code)
         if df is None or df.empty or "Team" not in df.columns or "Site name" not in df.columns:
-            print(f"ℹ️ រំលង '{code}' (គ្មានទិន្នន័យ ឬខ្វះ Column Team/Site name)")
             continue
         d = df.copy()
         d["Team"] = d["Team"].astype(str).str.strip()
@@ -213,7 +202,7 @@ def collect_tasks(task_codes, lo, hi, log_dates=None):
                 lst = log_dates.get((code, site, team))
                 if lst:
                     log_dt = lst.pop(0)
-                    if dt is None:  # "Last date record" គ្មានកាលបរិច្ឆេទ => ប្រើថ្ងៃដែល Approved_Log ចាប់បាន
+                    if dt is None:
                         dt = log_dt
             final_dates.append(dt)
         frames.append(pd.DataFrame({
@@ -255,14 +244,13 @@ def team_totals(df, team):
 
 # ---------------------------------------------------------------- រចនា Table
 def style_report(df, title, flags):
-    """flags: {column: [True/False/None ក្នុងមួយជួរ]} => ពណ៌បៃតង/ក្រហម"""
     st = df.style.set_caption(title).set_table_styles([
-        {"selector": "caption", "props": [("caption-side", "top"), ("font-size", "22px"), ("font-weight", "bold"),
+        {"selector": "caption", "props": [("caption-side", "top"), ("font-size", "20px"), ("font-weight", "bold"),
                                           ("text-align", "center"), ("background-color", "#2EA44E"), ("color", "white"),
-                                          ("padding", "10px"), ("border", "1px solid black")]},
+                                          ("padding", "10px"), ("border", "1px solid black"), ("font-family", "Khmer OS Battambang, sans-serif")]},
         {"selector": "th", "props": [("background-color", "#2EA44E"), ("color", "white"), ("font-weight", "bold"),
-                                     ("text-align", "center"), ("border", "1px solid black"), ("padding", "6px")]},
-        {"selector": "td", "props": [("text-align", "center"), ("border", "1px solid black"), ("padding", "5px")]},
+                                     ("text-align", "center"), ("border", "1px solid black"), ("padding", "6px"), ("font-family", "Khmer OS Battambang, sans-serif")]},
+        {"selector": "td", "props": [("text-align", "center"), ("border", "1px solid black"), ("padding", "5px"), ("font-family", "Khmer OS Battambang, sans-serif")]},
     ])
 
     def row_style(row):
@@ -279,34 +267,64 @@ def style_report(df, title, flags):
 
 
 def export_image(styler, path):
-    import dataframe_image as dfi  # import យឺត ដើម្បីឲ្យ --dry-run មិនត្រូវការ
+    import dataframe_image as dfi
     dfi.export(styler.hide(axis="index"), path, max_rows=-1)
 
 
-# ---------------------------------------------------------------- Mode: daily
-def build_daily_texts(df, day):
+# ---------------------------------------------------------------- Mode: daily (ជារូបភាពតារាង)
+def build_daily_reports(df, day):
+    """បង្កើតតារាងជារូបភាពសម្រាប់ Daily Report របស់ក្រុមនីមួយៗ"""
     wi = week_index(day)
-    texts = {}
+    reports = {}
     for team in VALID_TEAMS:
         rows = df[(df["Team"] == team) & df["Approved"] & (df["Date"] == day)]
-        msg = f"📋 របាយការណ៍ប្រចាំថ្ងៃ {team}\n📅 {day.isoformat()}\n"
+        
+        table_rows = []
         if rows.empty:
-            msg += "\nមិនទាន់មានការងារ Approved ថ្ងៃនេះទេ។"
+            table_rows.append({
+                "ប្រភេទការងារ (Task Code)": "គ្មានការងារ Approved ថ្ងៃនេះទេ",
+                "ចំនួន": 0,
+                "បញ្ជី Site": "-"
+            })
         else:
-            msg += f"\n✅ Approved ថ្ងៃនេះ៖ {len(rows)} ការងារ\n"
             for task, g in rows.groupby("Task"):
                 title = get_task_title(task)
                 sites = list(g["Site"])
                 shown = ", ".join(sites[:MAX_SITES_LISTED])
                 if len(sites) > MAX_SITES_LISTED:
                     shown += f" ... +{len(sites) - MAX_SITES_LISTED}"
-                msg += f"\n• {task}" + (f" ({title})" if title else "") + f"៖ {len(g)}\n   {shown}"
+                
+                task_label = f"{task}" + (f"\n({title})" if title else "")
+                table_rows.append({
+                    "ប្រភេទការងារ (Task Code)": task_label,
+                    "ចំនួន": len(g),
+                    "បញ្ជី Site": shown
+                })
+        
+        df_daily = pd.DataFrame(table_rows)
+        
+        # ក្បាលតារាង & Summary Progress
+        title_text = f"📋 របាយការណ៍ប្រចាំថ្ងៃ {team} ({day.isoformat()})\n✅ Approved ថ្ងៃនេះ៖ {len(rows)} ការងារ"
         if wi >= 0:
             total, _ = team_totals(df, team)
             quota = split_quota(total)[wi]
-            msg += f"\n\n📊 {WEEKS[wi]['label']}៖ Approved {week_done(df, team, wi)} / {quota} (ត្រូវធ្វើក្នុងសប្តាហ៍នេះ)"
-        texts[team] = msg
-    return texts
+            done_cnt = week_done(df, team, wi)
+            title_text += f" | 📊 {WEEKS[wi]['label']}៖ Approved {done_cnt}/{quota}"
+
+        # ឌីហ្សាញតារាង Daily
+        styler = df_daily.style.set_caption(title_text).set_table_styles([
+            {"selector": "caption", "props": [("caption-side", "top"), ("font-size", "16px"), ("font-weight", "bold"),
+                                              ("text-align", "center"), ("background-color", "#1b5e20"), ("color", "white"),
+                                              ("padding", "8px"), ("border", "1px solid black"), ("font-family", "Khmer OS Battambang, sans-serif")]},
+            {"selector": "th", "props": [("background-color", "#2e7d32"), ("color", "white"), ("font-weight", "bold"),
+                                         ("text-align", "center"), ("border", "1px solid black"), ("padding", "6px"), ("font-family", "Khmer OS Battambang, sans-serif")]},
+            {"selector": "td", "props": [("text-align", "center"), ("border", "1px solid black"), ("padding", "6px"), ("font-family", "Khmer OS Battambang, sans-serif")]},
+        ])
+        
+        caption_text = f"📋 របាយការណ៍ប្រចាំថ្ងៃ {team} - {day.isoformat()}"
+        reports[team] = (styler, df_daily, caption_text)
+        
+    return reports
 
 
 # ---------------------------------------------------------------- Mode: weekly
@@ -430,8 +448,6 @@ def main():
     if not task_chat:
         sys.exit("⚠️ រកមិនឃើញ Sheet→ChatID ក្នុង Tab 'Team chat IDs'")
     print(f"ℹ️ Chat ID ធីម៖ {team_chat}")
-    if not team_chat and not args.no_teams:
-        print("⚠️ មិនមាន Chat ID ធីម (Column A/B) នឹងមិនផ្ញើទៅក្រុមធីមទេ")
 
     lo, hi = WEEKS[0]["start"], min(WEEKS[-1]["end"], today)
     log_dates = load_log_dates(lo, hi)
@@ -442,9 +458,11 @@ def main():
     with Sender(args.dry_run, args.test_chat) as s:
         if args.mode == "daily":
             day = date.fromisoformat(args.date) if args.date else today
-            for team, msg in build_daily_texts(df, day).items():
+            daily_reports = build_daily_reports(df, day)
+            for team, (styler, df_daily, caption) in daily_reports.items():
+                img_path = f"daily_{team}.png"
                 if team in team_chat:
-                    s.text(team_chat[team], msg)
+                    s.image(team_chat[team], styler, img_path, caption, df_daily)
                 else:
                     print(f"⚠️ ខ្វះ Chat ID របស់ {team} រំលង")
             return
