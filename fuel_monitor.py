@@ -39,6 +39,7 @@ TEAM_RANGE = "allteam!$A:$B"      # A = Site Name, B = Team
 TEAM_LIST_COL = 2                  # allteam column B = Team
 LOW_FUEL_THRESHOLD = 15           # Remark ក្នុង Weekly Report
 SUMMARY_THRESHOLD = 20            # Summary: ក្រោម 20%
+TELEGRAM_MAX_LEN = 3800           # Telegram អនុញ្ញាត 4096 តួអក្សរ ទុកគម្លាតបន្តិច
 REPORT_HEADERS = ["ថ្ងៃខែ", "Site Name", "Team", "Fuel Level(%)",
                   "Battery Voltage of DG (V)", "Remark"]
 
@@ -71,6 +72,13 @@ FIELD_MAP = {
     "phase current 3": "Phase Current 3 (A)",
 }
 
+# សញ្ញា Emoji / Pictograph / ព្រួញ / Bullet ដែលត្រូវដកចេញពីសារ Telegram
+SYMBOL_RE = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\u2190-\u21FF\u2022\uFE0F\u200D]+")
+
+
+def strip_symbols(text):
+    return SYMBOL_RE.sub("", str(text)).strip()
+
 
 # ====================== LIST SITE / TEAM INFO ======================
 def _fetch_list_site_df():
@@ -79,10 +87,10 @@ def _fetch_list_site_df():
     try:
         res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
     except requests.RequestException as e:
-        print(f"⚠️ Failed to fetch station list: {e}")
+        print(f"[WARN] Failed to fetch station list: {e}")
         return None
     if res.status_code != 200:
-        print(f"⚠️ Failed to fetch station list: HTTP {res.status_code}")
+        print(f"[WARN] Failed to fetch station list: HTTP {res.status_code}")
         return None
     df = pd.read_csv(io.StringIO(res.text))
     df.columns = df.columns.astype(str).str.strip()
@@ -94,7 +102,7 @@ def fetch_station_codes():
     if df is None:
         return []
     if STATION_CODE_COLUMN not in df.columns:
-        print(f"⚠️ Column '{STATION_CODE_COLUMN}' not found. Columns found: {list(df.columns)}")
+        print(f"[WARN] Column '{STATION_CODE_COLUMN}' not found. Columns found: {list(df.columns)}")
         return []
     codes = df[STATION_CODE_COLUMN].dropna().astype(str).str.strip()
     return [c for c in codes if c and c.lower() not in ("nan", "none")]
@@ -140,7 +148,7 @@ def parse_bot_reply(text):
 def get_sheets_client():
     sa_key_raw = os.environ.get("GCP_SA_KEY")
     if not sa_key_raw:
-        raise ValueError("GCP_SA_KEY is missing — required to write to Google Sheet.")
+        raise ValueError("GCP_SA_KEY is missing - required to write to Google Sheet.")
     sa_info = json.loads(sa_key_raw)
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
     creds = Credentials.from_service_account_info(sa_info, scopes=scopes)
@@ -154,7 +162,7 @@ def get_or_create_output_worksheet(gc):
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=OUTPUT_SHEET_NAME, rows=1000, cols=len(OUTPUT_HEADERS))
         ws.append_row(OUTPUT_HEADERS)
-        print(f"ℹ️ Created new worksheet '{OUTPUT_SHEET_NAME}' with headers.")
+        print(f"[INFO] Created new worksheet '{OUTPUT_SHEET_NAME}' with headers.")
     return ws
 
 
@@ -164,72 +172,238 @@ async def append_row_with_retry(ws, row, max_attempts=3):
             ws.append_row(row, value_input_option="USER_ENTERED")
             return True
         except Exception as e:
-            print(f"⚠️ Sheet write attempt {attempt} failed: {e}")
+            print(f"[WARN] Sheet write attempt {attempt} failed: {e}")
             if attempt < max_attempts:
                 wait_sec = 10 * attempt
                 await asyncio.sleep(wait_sec)
             else:
-                print(f"❌ Sheet write failed after {max_attempts} attempts — skipping row.")
+                print(f"[ERROR] Sheet write failed after {max_attempts} attempts - skipping row.")
                 return False
 
 
 # ============================ FUEL ALERT & TELEGRAM REPORTS ============================
-async def send_fuel_alert(client, code, fuel_val, reply_text, team_info):
+def _pct(v):
+    return f"{v:g}%"  # 0.0 -> 0%, 11.0 -> 11%
+
+
+def build_fuel_alert_message(code, fuel_val, reply_text, team_info):
     info = team_info.get(code, {})
     leader = info.get("leader", "")
     team = info.get("team", "")
-    msg = (
-        f"🚨 Fuel ទាប! Site: {code}\n"
-        f"⛽ Fuel Level = {fuel_val}%\n"
-        + (f"👥 Team: {team}\n" if team else "")
-        + (f"👤 Bong {leader}\n" if leader else "")
-        + f"\n{reply_text}"
-    )
+    lines = [f"Fuel ទាប! Site: {code}",
+             f"Fuel Level: {_pct(fuel_val)}"]
+    if team:
+        lines.append(f"Team: {team}")
+    if leader:
+        lines.append(f"Bong {leader}")
+    msg = "\n".join(lines) + "\n\n" + strip_symbols(reply_text)
+    return msg[:TELEGRAM_MAX_LEN]
+
+
+async def send_fuel_alert(client, code, fuel_val, reply_text, team_info):
+    msg = build_fuel_alert_message(code, fuel_val, reply_text, team_info)
     if not FUEL_ALERT_GROUP_IDS:
         return
     for gid in FUEL_ALERT_GROUP_IDS:
         try:
-            await client.send_message(gid, msg)
-            print(f"🚨 Fuel alert sent for '{code}' → {gid}")
+            await client.send_message(gid, msg, parse_mode=None, link_preview=False)
+            print(f"[ALERT] Fuel alert sent for '{code}' to {gid}")
         except Exception as e:
-            print(f"⚠️ Failed to send alert for '{code}' to {gid}: {e}")
+            print(f"[WARN] Failed to send alert for '{code}' to {gid}: {e}")
+
+
+def group_low_fuel(data, team_info):
+    """ប្រើតម្លៃចុងក្រោយរបស់ Site នីមួយៗ ហើយដាក់ជាក្រុមតាម Team។
+    Return (low_sites, groups) ដែល groups = {team: {"leaders": [...], "sites": [...]}}"""
+    latest = {}
+    for x in data:  # data តម្រៀបតាមថ្ងៃរួចហើយ => ជួរក្រោយ = តម្លៃថ្មីបំផុត
+        latest[x["site"]] = x
+    low = [x for x in latest.values() if x["fuel"] is not None and x["fuel"] < SUMMARY_THRESHOLD]
+    groups = {}
+    for x in low:
+        info = team_info.get(x["site"], {})
+        team = info.get("team") or "N/A"
+        g = groups.setdefault(team, {"leaders": [], "sites": []})
+        leader = info.get("leader", "")
+        if leader and leader not in g["leaders"]:
+            g["leaders"].append(leader)
+        g["sites"].append(x)
+    return low, groups
+
+
+def _status_label(fuel):
+    if fuel <= 0:
+        return "អស់"
+    if fuel <= FUEL_ALERT_THRESHOLD:
+        return "ទាប"
+    return "ត្រូវតាមដាន"
+
+
+def build_summary_messages(data, team_info):
+    """សារសង្ខេបប្រេងទាប (អត្ថបទសុទ្ធ គ្មានសញ្ញា) ដាក់ជាក្រុមតាម Team (ប្រើជា fallback ពេលបង្កើតតារាងរូបភាពមិនបាន)។"""
+    low, groups = group_low_fuel(data, team_info)
+    if not low:
+        return []
+
+    stamp = datetime.now(timezone(timedelta(hours=7))).strftime("%Y-%m-%d %H:%M")
+    header = (f"របាយការណ៍ប្រេងទាប (ក្រោម {SUMMARY_THRESHOLD}%)\n"
+              f"ថ្ងៃទី {stamp}  សរុប {len(low)} Site")
+
+    blocks = []
+    for team in sorted(groups, key=lambda t: (t == "N/A", t)):  # N/A ដាក់ចុងក្រោយ
+        g = groups[team]
+        sites = sorted(g["sites"], key=lambda x: (x["fuel"], x["site"]))
+        title = "Team មិនស្គាល់" if team == "N/A" else f"Team {team}"
+        lines = [f"{title} ({len(sites)} Site)"]
+        if g["leaders"]:
+            lines.append("Bong " + ", ".join(g["leaders"]))
+        for x in sites:
+            lines.append(f"{x['site']}: {_pct(x['fuel'])}" + (" (អស់)" if x["fuel"] <= 0 else ""))
+        blocks.append("\n".join(lines))
+
+    footer = "សូមចាក់ប្រេងជាបន្ទាន់!"
+    messages, current = [], header
+    for b in blocks:
+        if len(current) + len(b) + 2 > TELEGRAM_MAX_LEN:
+            messages.append(current)
+            current = "របាយការណ៍ប្រេងទាប (បន្ត)"
+        current += "\n\n" + b
+    messages.append(current + "\n\n" + footer)
+    return messages
+
+
+# ---------------------- តារាងរូបភាព (Table image) ----------------------
+TABLE_COLUMNS = ["No", "Team", "Site", "Fuel", "Status", "Team Leader"]
+ROW_FILL = {"អស់": "#FFC7CE", "ទាប": "#FFE0B2", "ត្រូវតាមដាន": "#FFF2CC"}
+MAX_ROWS_PER_IMAGE = 40  # បំបែកជាច្រើនរូបបើច្រើនជាងនេះ (បំបែកតាមក្រុម Team)
+
+
+def build_summary_tables(data, team_info):
+    """Return (pages, low_count, groups)។ page = (DataFrame, first_row_flags)។
+    ក្នុងក្រុមនីមួយៗ Team និង Leader បង្ហាញតែជួរដំបូង ដើម្បីឲ្យតារាងស្អាត។"""
+    low, groups = group_low_fuel(data, team_info)
+    if not low:
+        return [], 0, groups
+
+    team_rows = []  # [[row dict, ...] ក្នុងមួយ Team]
+    no = 0
+    for team in sorted(groups, key=lambda t: (t == "N/A", t)):
+        g = groups[team]
+        sites = sorted(g["sites"], key=lambda x: (x["fuel"], x["site"]))
+        rows = []
+        for i, x in enumerate(sites):
+            no += 1
+            rows.append({
+                "No": no,
+                "Team": ("មិនស្គាល់" if team == "N/A" else team) if i == 0 else "",
+                "Site": x["site"],
+                "Fuel": _pct(x["fuel"]),
+                "Status": _status_label(x["fuel"]),
+                "Team Leader": ", ".join(g["leaders"]) if i == 0 else "",
+                "_first": i == 0,
+            })
+        team_rows.append(rows)
+
+    pages, current = [], []
+    for rows in team_rows:
+        if current and len(current) + len(rows) > MAX_ROWS_PER_IMAGE:
+            pages.append(current)
+            current = []
+        current += rows
+    if current:
+        pages.append(current)
+    return pages, len(low), groups
+
+
+def style_summary_table(rows, title):
+    df = pd.DataFrame(rows)
+    first = list(df["_first"])
+    status = list(df["Status"])
+    df = df[TABLE_COLUMNS]
+
+    st = df.style.set_caption(title).set_table_styles([
+        {"selector": "caption", "props": [("caption-side", "top"), ("font-size", "22px"), ("font-weight", "bold"),
+                                          ("text-align", "center"), ("background-color", "#2EA44E"), ("color", "white"),
+                                          ("padding", "10px"), ("border", "1px solid black")]},
+        {"selector": "th", "props": [("background-color", "#369388"), ("color", "white"), ("font-weight", "bold"),
+                                     ("text-align", "center"), ("border", "1px solid black"), ("padding", "6px 10px")]},
+        {"selector": "td", "props": [("text-align", "center"), ("border", "1px solid #888"), ("padding", "5px 10px"),
+                                     ("font-size", "16px")]},
+    ])
+
+    def row_style(row):
+        i = row.name
+        out = []
+        for col in TABLE_COLUMNS:
+            css = f"background-color: {ROW_FILL.get(status[i], '')};" if status[i] in ROW_FILL else ""
+            if first[i]:
+                css += "border-top: 3px solid black;"
+            if col in ("Team", "Team Leader") and first[i]:
+                css += "font-weight: bold;"
+            if col == "Status":
+                css += "font-weight: bold;"
+            out.append(css)
+        return out
+
+    return st.apply(row_style, axis=1).hide(axis="index")
+
+
+def export_table_image(rows, title, path):
+    import dataframe_image as dfi  # import យឺត: ប្រើតែពេលចាំបាច់
+    dfi.export(style_summary_table(rows, title), path, max_rows=-1)
+
+
+def build_table_caption(groups, low_count, stamp, page_no, page_total):
+    """Caption របស់រូប៖ ចំណងជើង + Mention មេធីម (Telegram ជូនដំណឹងពី Caption បាន)។"""
+    head = f"របាយការណ៍ប្រេងទាប (ក្រោម {SUMMARY_THRESHOLD}%)\n{stamp}  សរុប {low_count} Site"
+    if page_total > 1:
+        head += f"  (រូបទី {page_no}/{page_total})"
+    lines = []
+    for team in sorted(groups, key=lambda t: (t == "N/A", t)):
+        if groups[team]["leaders"]:
+            lines.append(f"{team}: Bong " + ", ".join(groups[team]["leaders"]))
+    caption = head + "\n\n" + "\n".join(lines) + "\n\nសូមចាក់ប្រេងជាបន្ទាន់!"
+    return caption[:1000]
 
 
 async def send_summary_telegram_report(client, data, team_info):
-    """ផ្ញើរបាយការណ៍ Summary សរុបប្រេងទាប និង Mention ឈ្មោះមេធីមតាម Site ចូល Main Group."""
+    """ផ្ញើរបាយការណ៍ Summary ប្រេងទាប ជាតារាងរូបភាព (ដាក់ជាក្រុម Team) ចូល Main Group។
+    បើបង្កើតរូបមិនបាន ប្រើសារអត្ថបទជំនួស។"""
     if not FUEL_ALERT_GROUP_IDS or not data:
         return
-
-    low_fuel_sites = [x for x in data if x["fuel"] is not None and x["fuel"] < SUMMARY_THRESHOLD]
-    if not low_fuel_sites:
+    stamp = datetime.now(timezone(timedelta(hours=7))).strftime("%Y-%m-%d %H:%M")
+    try:
+        pages, low_count, groups = build_summary_tables(data, team_info)
+        if not pages:
+            return
+        paths = []
+        for i, rows in enumerate(pages, start=1):
+            title = f"ប្រេងទាប ក្រោម {SUMMARY_THRESHOLD}%  {stamp}"
+            path = f"low_fuel_summary_{i}.png"
+            export_table_image(rows, title, path)
+            paths.append(path)
+        for gid in FUEL_ALERT_GROUP_IDS:
+            for i, path in enumerate(paths, start=1):
+                # Caption (Mention មេធីម) ភ្ជាប់ជាមួយរូបដំបូង រូបបន្តបន្ទាប់មាន Caption ខ្លី
+                cap = build_table_caption(groups, low_count, stamp, i, len(paths)) if i == 1 else f"(រូបទី {i}/{len(paths)})"
+                await client.send_file(gid, path, caption=cap, parse_mode=None)
+            print(f"[OK] Summary table image sent to Main Group ({gid}) - {len(paths)} image(s)")
         return
+    except Exception as e:
+        print(f"[WARN] Table image failed ({type(e).__name__}: {e}) - fallback to text message")
 
-    msg = f"📊 *របាយការណ៍សរុបប្រេងទាប (ក្រោម {SUMMARY_THRESHOLD}%)*\n\n"
-    
-    # ផ្គូផ្គង Site និង Mention ឈ្មោះមេធីម
-    seen_sites = set()
-    for item in low_fuel_sites:
-        site = item["site"]
-        if site in seen_sites:
-            continue
-        seen_sites.add(site)
-        
-        fuel = item["fuel"]
-        info = team_info.get(site, {})
-        team = info.get("team", "N/A")
-        leader = info.get("leader", "")
-        
-        leader_str = f" → 👤 Bong {leader}" if leader else ""
-        msg += f"• *{site}* (Team: {team}): Fuel {fuel}%{leader_str}\n"
-
-    msg += f"\nសរុបមាន {len(seen_sites)} Site ត្រូវការចាក់ប្រេងជាបន្ទាន់!"
-
+    messages = build_summary_messages(data, team_info)
+    if not messages:
+        return
     for gid in FUEL_ALERT_GROUP_IDS:
-        try:
-            await client.send_message(gid, msg, parse_mode='markdown')
-            print(f"✅ Summary report sent to Main Group ({gid})")
-        except Exception as e:
-            print(f"⚠️ Failed to send summary report to {gid}: {e}")
+        for msg in messages:
+            try:
+                await client.send_message(gid, msg, parse_mode=None, link_preview=False)
+            except Exception as e:
+                print(f"[WARN] Failed to send summary report to {gid}: {e}")
+                break
+        else:
+            print(f"[OK] Summary report sent to Main Group ({gid}) - {len(messages)} message(s)")
 
 
 # ============================ REPORTS ============================
@@ -240,7 +414,7 @@ def _load_team_map(sh, team_info):
             if len(r) > 1 and r[0].strip() and r[1].strip():
                 tmap.setdefault(r[0].strip(), r[1].strip())
     except Exception as e:
-        print(f"⚠️ មិនអាចអាន sheet '{TEAM_LIST_SHEET}': {e}")
+        print(f"[WARN] មិនអាចអាន sheet '{TEAM_LIST_SHEET}': {e}")
     for site, i in (team_info or {}).items():
         if i.get("team"):
             tmap.setdefault(site, i["team"])
@@ -335,7 +509,7 @@ def build_weekly_report(sh, data, tmap, year, month):
 
     ws = _get_ws(sh, REPORT_SHEET_NAME, rows=max(height + 20, 200), cols=28)
     _write_grid(ws, grid)
-    print(f"✅ Weekly Report បានបង្កើត ({len(data)} ជួរ, {year}-{month:02d})")
+    print(f"[OK] Weekly Report បានបង្កើត ({len(data)} ជួរ, {year}-{month:02d})")
 
 
 def build_summary_report(sh, data, tmap):
@@ -364,7 +538,7 @@ def build_summary_report(sh, data, tmap):
 
     ws = _get_ws(sh, SUMMARY_SHEET_NAME, rows=200, cols=10)
     _write_grid(ws, grid)
-    print(f"✅ Summary Report បានបង្កើត ({len(teams)} Teams)")
+    print(f"[OK] Summary Report បានបង្កើត ({len(teams)} Teams)")
 
 
 def run_reports(gc, team_info=None):
@@ -379,7 +553,7 @@ def run_reports(gc, team_info=None):
         build_summary_report(sh, data, tmap)
         return data
     except Exception as e:
-        print(f"❌ Report FAILED: {type(e).__name__}: {e}")
+        print(f"[ERROR] Report FAILED: {type(e).__name__}: {e}")
         return []
 
 
@@ -395,7 +569,7 @@ async def main():
     station_codes = fetch_station_codes()
     if not station_codes:
         return
-    
+
     team_info = fetch_team_info()
     gc = get_sheets_client()
     ws = get_or_create_output_worksheet(gc)
@@ -417,7 +591,7 @@ async def main():
                     response = await conv.get_reply()
                     reply_text = response.raw_text
             except Exception as e:
-                print(f"⚠️ No reply for '{code}': {e}")
+                print(f"[WARN] No reply for '{code}': {e}")
 
             if not reply_text:
                 row = [timestamp, code] + [""] * 14 + ["NO REPLY"]
@@ -446,7 +620,7 @@ async def main():
     finally:
         await client.disconnect()
 
-    print("✅ Fuel monitor run completed.")
+    print("[OK] Fuel monitor run completed.")
 
 
 if __name__ == "__main__":
