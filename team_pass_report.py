@@ -319,7 +319,7 @@ def build_weekly(df, wi):
                  "Result": f"Pass {n_pass}/{len(VALID_TEAMS)}"})
     out = pd.DataFrame(rows)
     flags = {"Result": flags_ok + [None]}
-    title = f"សរុบ{w['label']} ({w['start']} → {w['end']})"
+    title = f"សរុប{w['label']} ({w['start']} → {w['end']})"
     caption = f"{title}\n" + "\n".join(
         f"{r['Team']}: {r['Approved']}/{r['ត្រូវធ្វើ']}  {'Pass' if r['Result'] == 'Pass' else 'Not Pass'}"
         for r in rows[:-1]) + f"\n\nPass {n_pass} ធីម | Not Pass {len(VALID_TEAMS) - n_pass} ធីម"
