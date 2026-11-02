@@ -24,6 +24,9 @@ WEEKS = [
     {"label": "សប្តាហ៍ទី 4", "start": date(2026, 10, 25), "end": date(2026, 10, 31)},
 ]
 
+# ចំនួនសប្តាហ៍សម្រាប់ Task ពិសេស (Task ផ្សេងទៀតប្រើ 4 សប្តាហ៍ធម្មតា)
+TASK_WEEK_COUNT = {"A2": 3}
+
 GREEN, RED = "background-color:#C6EFCE;font-weight:bold;", "background-color:#FFC7CE;font-weight:bold;"
 MAX_SITES_LISTED = 8
 NA_VALUES = ("", "nan", "none", "#n/a", "n/a")
@@ -200,10 +203,22 @@ def collect_tasks(task_codes, lo, hi, log_dates=None):
     return pd.concat(frames, ignore_index=True)
 
 
-def split_quota(total):
-    n = len(WEEKS)
+def split_quota(total, n=None):
+    """ចែក total ជា n សប្តាហ៍ដំបូង ហើយសប្តាហ៍ដែលនៅសល់ = 0"""
+    full = len(WEEKS)
+    n = min(n or full, full)
     base, rem = divmod(total, n)
-    return [base + (1 if i < rem else 0) for i in range(n)]
+    return [base + (1 if i < rem else 0) for i in range(n)] + [0] * (full - n)
+
+
+def team_quota(df, team):
+    """កូតប្រចាំសប្តាហ៍របស់ធីម = ផលបូកកូតរបស់ Task នីមួយៗ (A2 ចែកតែ 3 សប្តាហ៍)"""
+    quotas = [0] * len(WEEKS)
+    d = df[df["Team"] == team]
+    for task, g in d.groupby("Task"):
+        q = split_quota(len(g), TASK_WEEK_COUNT.get(str(task).strip().upper()))
+        quotas = [a + b for a, b in zip(quotas, q)]
+    return quotas
 
 
 def week_index(day):
@@ -273,15 +288,14 @@ def build_daily_reports(df, day):
                     shown += f" ... +{len(sites) - MAX_SITES_LISTED}"
                 task_label = f"{task}" + (f"\n({title})" if title else "")
                 table_rows.append({
-                    "ប្រភេទการងារ (Task Code)": task_label,
+                    "ប្រភេទការងារ (Task Code)": task_label,
                     "ចំនួន": len(g),
                     "បញ្ជី Site": shown
                 })
         df_daily = pd.DataFrame(table_rows)
         title_text = f"របាយការណ៍ប្រចាំថ្ងៃ {team} ({day.isoformat()})\nApproved ថ្ងៃនេះ៖ {len(rows)} ការងារ"
         if wi >= 0:
-            total, _ = team_totals(df, team)
-            quota = split_quota(total)[wi]
+            quota = team_quota(df, team)[wi]
             done_cnt = week_done(df, team, wi)
             title_text += f" | {WEEKS[wi]['label']}៖ Approved {done_cnt}/{quota}"
 
@@ -303,8 +317,7 @@ def build_weekly(df, wi):
     rows, flags_ok = [], []
     t_done = t_quota = 0
     for i, team in enumerate(VALID_TEAMS, start=1):
-        total, _ = team_totals(df, team)
-        quota = split_quota(total)[wi]
+        quota = team_quota(df, team)[wi]
         done = week_done(df, team, wi)
         ok = done >= quota
         t_done += done
@@ -341,7 +354,7 @@ def build_final(df):
     rows, flag_cols, res_flags, team_texts = [], {f"ស{i + 1}": [] for i in range(len(WEEKS))}, [], {}
     for team in VALID_TEAMS:
         total, approved = team_totals(df, team)
-        quotas = split_quota(total)
+        quotas = team_quota(df, team)
         row = {"Team": team}
         wk_lines = []
         for i in range(len(WEEKS)):
@@ -350,11 +363,11 @@ def build_final(df):
             flag_cols[f"ស{i + 1}"].append(done >= quotas[i])
             is_ok = done >= quotas[i]
             wk_lines.append(f"• {WEEKS[i]['label']}៖ {done}/{quotas[i]} {'(Pass)' if is_ok else '(Not Pass)'}")
-        
+
         ok = total > 0 and approved >= total
         miss_total = max(total - approved, 0)
         status_final = "Pass" if ok else f"Not Pass (ខ្វះ {miss_total} ការងារ)"
-        
+
         team_texts[team] = (
             f"{team} - សរុបរួម {len(WEEKS)} សប្តាហ៍\n\n"
             + "\n".join(wk_lines) + "\n\n"
@@ -365,7 +378,7 @@ def build_final(df):
         row["Result"] = "Pass" if ok else "Not Pass"
         res_flags.append(ok)
         rows.append(row)
-        
+
     out = pd.DataFrame(rows)
     flags = {k: v for k, v in flag_cols.items()}
     flags["Result"] = res_flags
