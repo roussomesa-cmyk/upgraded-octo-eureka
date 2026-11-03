@@ -1,5 +1,6 @@
 """
-team_pass_report.py - Report Power CHA2026 (រត់ដោយដៃ ដាច់ដោយឡែកពីគ្នា)
+team_pass_report.py - Report Power CHA (រត់ដោយដៃ ដាច់ដោយឡែកពីគ្នា)
+របាយការណ៍ប្តូរខែដោយស្វ័យប្រវត្តិ; អាចកំណត់ខែដោយ --month YYYY-MM
 """
 import argparse
 import io
@@ -16,15 +17,25 @@ MAIN_GROUP_ID = int(os.environ.get("NOTIFY_GROUP_ID") or "-1001853372580")
 VALID_TEAMS = [f"CHA-T0{i}" for i in range(1, 8)]
 CAMBODIA_TZ = timezone(timedelta(hours=7))
 
-# ៤សប្តាហ៍ (ចាប់ផ្តើមពីថ្ងៃទី ៤ តុលា ២០២៦ ស្របតាមការប្រជុំថ្ងៃអង្គារ)
-WEEKS = [
-    {"label": "សប្តាហ៍ទី 1", "start": date(2026, 10, 4), "end": date(2026, 10, 10)},
-    {"label": "សប្តាហ៍ទី 2", "start": date(2026, 10, 11), "end": date(2026, 10, 17)},
-    {"label": "សប្តាហ៍ទី 3", "start": date(2026, 10, 18), "end": date(2026, 10, 24)},
-    {"label": "សប្តាហ៍ទី 4", "start": date(2026, 10, 25), "end": date(2026, 10, 31)},
-]
 
-# ចំនួនសប្តាហ៍សម្រាប់ Task ពិសេស (Task ផ្សេងទៀតប្រើ 4 សប្តាហ៍ធម្មតា)
+def weeks_for_month(year, month):
+    """បែងចែកខែជាចន្លោះ ៧ ថ្ងៃ ចាប់ពីថ្ងៃទី ១; សប្តាហ៍ចុងក្រោយអាចខ្លីជាង ៧ ថ្ងៃ។"""
+    start = date(year, month, 1)
+    if month == 12:
+        month_end = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        month_end = date(year, month + 1, 1) - timedelta(days=1)
+    weeks = []
+    while start <= month_end:
+        end = min(start + timedelta(days=6), month_end)
+        weeks.append({"label": f"សប្តាហ៍ទី {len(weeks) + 1}", "start": start, "end": end})
+        start = end + timedelta(days=1)
+    return weeks
+
+
+# កំណត់ដំបូងជាខែបច្ចុប្បន្ន; main() នឹងកំណត់ម្ដងទៀតតាម --month ប្រសិនបើមាន។
+WEEKS = weeks_for_month(datetime.now(CAMBODIA_TZ).year, datetime.now(CAMBODIA_TZ).month)
+# Task ពិសេស A2 ចែកកូតត្រឹម ៣ សប្តាហ៍ដំបូង; Task ផ្សេងទៀតចែកតាមចំនួនសប្តាហ៍ក្នុងខែ។
 TASK_WEEK_COUNT = {"A2": 3}
 
 GREEN, RED = "background-color:#C6EFCE;font-weight:bold;", "background-color:#FFC7CE;font-weight:bold;"
@@ -40,6 +51,7 @@ def fetch_csv(sheet_name_or_gid):
         print(f"⚠️ Request failed for sheet '{sheet_name_or_gid}': {e}")
         return None
     if res.status_code != 200:
+        print(f"⚠️ Sheet '{sheet_name_or_gid}' returned HTTP {res.status_code}")
         return None
 
     lines = res.text.splitlines()
@@ -51,7 +63,11 @@ def fetch_csv(sheet_name_or_gid):
             header_row_idx = idx
             break
 
-    df = pd.read_csv(io.StringIO(res.text), skiprows=header_row_idx)
+    try:
+        df = pd.read_csv(io.StringIO(res.text), skiprows=header_row_idx)
+    except pd.errors.ParserError as e:
+        print(f"⚠️ Cannot parse CSV for sheet '{sheet_name_or_gid}': {e}")
+        return None
     df = df.dropna(how="all")
     df.columns = df.columns.astype(str).str.strip()
 
@@ -70,6 +86,14 @@ def fetch_csv(sheet_name_or_gid):
             rename_dict[col] = "Result"
         elif "serial" in c:
             rename_dict[col] = "Serial"
+        elif c in ("last date record", "last date", "date record"):
+            rename_dict[col] = "Last date record"
+        elif c == "task code":
+            rename_dict[col] = "Task code"
+        elif c == "chatid":
+            rename_dict[col] = "ChatID"
+        elif c == "sheet":
+            rename_dict[col] = "Sheet"
     if rename_dict:
         df = df.rename(columns=rename_dict)
     if df.columns.duplicated().any():
@@ -77,7 +101,9 @@ def fetch_csv(sheet_name_or_gid):
     return df
 
 
-def get_task_title(task_code, cache={}):
+def get_task_title(task_code, cache=None):
+    if cache is None:
+        cache = {}
     if task_code in cache:
         return cache[task_code]
     url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet={task_code}"
@@ -103,7 +129,7 @@ def load_mappings():
         for _, r in df.dropna(subset=["Sheet", "ChatID"]).iterrows():
             try:
                 task_chat[str(r["Sheet"]).strip()] = int(float(str(r["ChatID"]).strip()))
-            except ValueError:
+            except (ValueError, TypeError):
                 continue
     if {"Column A", "Column B"} <= set(df.columns):
         for _, r in df.dropna(subset=["Column A", "Column B"]).iterrows():
@@ -113,7 +139,7 @@ def load_mappings():
             team = f"CHA-T{int(m.group(1)):02d}"
             try:
                 team_chat[team] = int(float(str(r["Column B"]).strip()))
-            except ValueError:
+            except (ValueError, TypeError):
                 continue
     return task_chat, team_chat
 
@@ -133,7 +159,10 @@ def parse_date(val, lo, hi):
             d, mo, y = map(int, m.groups())
             cands = [(y, mo, d), (y, d, mo)]
         elif re.match(r"^\d{5}(\.\d+)?$", s):
-            dt = date(1899, 12, 30) + timedelta(days=int(float(s)))
+            try:
+                dt = date(1899, 12, 30) + timedelta(days=int(float(s)))
+            except (OverflowError, ValueError):
+                return None
             return dt if lo <= dt <= hi else None
     for y, mo, d in cands:
         try:
@@ -165,6 +194,7 @@ def collect_tasks(task_codes, lo, hi, log_dates=None):
     for code in task_codes:
         df = fetch_csv(code)
         if df is None or df.empty or "Team" not in df.columns or "Site name" not in df.columns:
+            print(f"⚠️ Sheet '{code}' មិនមានទិន្នន័យ ឬខ្វះ Column Team / Site name")
             continue
         d = df.copy()
         d["Team"] = d["Team"].astype(str).str.strip()
@@ -173,9 +203,13 @@ def collect_tasks(task_codes, lo, hi, log_dates=None):
         if d.empty:
             continue
         if "Result" in d.columns:
-            approved = d["Result"].astype(str).str.strip().str.lower() == "approved"
+            # រាប់តែ status ដែលចាប់ផ្ដើមដោយ Approved; មិនរាប់ Not Approved។
+            approved = d["Result"].astype(str).str.strip().str.lower().str.contains(
+                r"^approved\b", regex=True, na=False
+            )
         else:
             approved = pd.Series(False, index=d.index)
+            print(f"⚠️ Sheet '{code}' ខ្វះ Column Result; Approved នឹងត្រូវរាប់ជា 0")
         if "Last date record" in d.columns:
             dates = d["Last date record"].map(lambda v: parse_date(v, lo, hi))
         else:
@@ -204,7 +238,7 @@ def collect_tasks(task_codes, lo, hi, log_dates=None):
 
 
 def split_quota(total, n=None):
-    """ចែក total ជា n សប្តាហ៍ដំបូង ហើយសប្តាហ៍ដែលនៅសល់ = 0"""
+    """ចែក total ជា n សប្តាហ៍ដំបូង ហើយសប្តាហ៍ដែលនៅសល់ = 0។"""
     full = len(WEEKS)
     n = min(n or full, full)
     base, rem = divmod(total, n)
@@ -212,7 +246,7 @@ def split_quota(total, n=None):
 
 
 def team_quota(df, team):
-    """កូតប្រចាំសប្តាហ៍របស់ធីម = ផលបូកកូតរបស់ Task នីមួយៗ (A2 ចែកតែ 3 សប្តាហ៍)"""
+    """កូតាប្រចាំសប្តាហ៍របស់ធីម = ផលបូកកូតារបស់ Task នីមួយៗ។"""
     quotas = [0] * len(WEEKS)
     d = df[df["Team"] == team]
     for task, g in d.groupby("Task"):
@@ -230,7 +264,9 @@ def week_index(day):
 
 def week_done(df, team, wi):
     w = WEEKS[wi]
-    m = (df["Team"] == team) & df["Approved"] & df["Date"].map(lambda x: x is not None and w["start"] <= x <= w["end"])
+    m = (df["Team"] == team) & df["Approved"] & df["Date"].map(
+        lambda x: x is not None and w["start"] <= x <= w["end"]
+    )
     return int(m.sum())
 
 
@@ -274,11 +310,7 @@ def build_daily_reports(df, day):
         rows = df[(df["Team"] == team) & df["Approved"] & (df["Date"] == day)]
         table_rows = []
         if rows.empty:
-            table_rows.append({
-                "ប្រភេទការងារ (Task Code)": "គ្មានការងារ Approved ថ្ងៃនេះទេ",
-                "ចំនួន": 0,
-                "បញ្ជី Site": "-"
-            })
+            table_rows.append({"ប្រភេទការងារ (Task Code)": "គ្មានការងារ Approved ថ្ងៃនេះទេ", "ចំនួន": 0, "បញ្ជី Site": "-"})
         else:
             for task, g in rows.groupby("Task"):
                 title = get_task_title(task)
@@ -287,11 +319,7 @@ def build_daily_reports(df, day):
                 if len(sites) > MAX_SITES_LISTED:
                     shown += f" ... +{len(sites) - MAX_SITES_LISTED}"
                 task_label = f"{task}" + (f"\n({title})" if title else "")
-                table_rows.append({
-                    "ប្រភេទការងារ (Task Code)": task_label,
-                    "ចំនួន": len(g),
-                    "បញ្ជី Site": shown
-                })
+                table_rows.append({"ប្រភេទការងារ (Task Code)": task_label, "ចំនួន": len(g), "បញ្ជី Site": shown})
         df_daily = pd.DataFrame(table_rows)
         title_text = f"របាយការណ៍ប្រចាំថ្ងៃ {team} ({day.isoformat()})\nApproved ថ្ងៃនេះ៖ {len(rows)} ការងារ"
         if wi >= 0:
@@ -323,8 +351,7 @@ def build_weekly(df, wi):
         t_done += done
         t_quota += quota
         pct = f"{int(round(done / quota * 100))}%" if quota > 0 else "0%"
-        rows.append({"No": i, "Team": team, "ត្រូវធ្វើ": quota, "Approved": done, "%": pct,
-                     "Result": "Pass" if ok else "Not Pass"})
+        rows.append({"No": i, "Team": team, "ត្រូវធ្វើ": quota, "Approved": done, "%": pct, "Result": "Pass" if ok else "Not Pass"})
         flags_ok.append(ok)
     n_pass = sum(flags_ok)
     pct = f"{int(round(t_done / t_quota * 100))}%" if t_quota else "0%"
@@ -343,9 +370,7 @@ def build_weekly(df, wi):
         status_text = "Pass" if ok else f"Not Pass (ខ្វះ {miss})"
         team_texts[r["Team"]] = (
             f"{r['Team']} - សរុប{title}\n\n"
-            f"• ត្រូវធ្វើ៖ {r['ត្រូវធ្វើ']}\n"
-            f"• Approved៖ {r['Approved']} ({r['%']})\n"
-            f"• ស្ថានភាព៖ {status_text}"
+            f"• ត្រូវធ្វើ៖ {r['ត្រូវធ្វើ']}\n• Approved៖ {r['Approved']} ({r['%']})\n• ស្ថានភាព៖ {status_text}"
         )
     return out, flags, title, caption, team_texts
 
@@ -367,12 +392,9 @@ def build_final(df):
         ok = total > 0 and approved >= total
         miss_total = max(total - approved, 0)
         status_final = "Pass" if ok else f"Not Pass (ខ្វះ {miss_total} ការងារ)"
-
         team_texts[team] = (
-            f"{team} - សរុបរួម {len(WEEKS)} សប្តាហ៍\n\n"
-            + "\n".join(wk_lines) + "\n\n"
-            f"• Approved សរុប៖ {approved}/{total}\n"
-            f"• លទ្ធផល៖ {status_final}"
+            f"{team} - សរុបរួម {len(WEEKS)} សប្តាហ៍\n\n" + "\n".join(wk_lines) + "\n\n"
+            f"• Approved សរុប៖ {approved}/{total}\n• លទ្ធផល៖ {status_final}"
         )
         row["Approved សរុប"] = f"{approved}/{total}"
         row["Result"] = "Pass" if ok else "Not Pass"
@@ -427,10 +449,11 @@ class Sender:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Team Pass report (រត់ដោយដៃ)")
+    ap = argparse.ArgumentParser(description="Team Pass report (ប្តូរខែដោយស្វ័យប្រវត្តិ)")
     ap.add_argument("mode", choices=["daily", "weekly", "final"])
     ap.add_argument("--date", help="daily៖ YYYY-MM-DD")
-    ap.add_argument("--week", type=int, help="weekly៖ 1-4")
+    ap.add_argument("--month", help="ខែរបាយការណ៍៖ YYYY-MM (បើមិនដាក់ ប្រើខែបច្ចុប្បន្ន)")
+    ap.add_argument("--week", type=int, help="លេខសប្តាហ៍ក្នុងខែ (ចាប់ពី 1)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--test-chat", type=int)
     ap.add_argument("--no-teams", action="store_true")
@@ -438,17 +461,49 @@ def main():
     args = ap.parse_args()
 
     today = datetime.now(CAMBODIA_TZ).date()
+    if args.month:
+        if not re.fullmatch(r"\d{4}-\d{2}", args.month):
+            sys.exit("⚠️ ទម្រង់ --month មិនត្រឹមត្រូវទេ។ ប្រើ YYYY-MM ឧទាហរណ៍ 2026-11")
+        try:
+            report_month = date.fromisoformat(args.month + "-01")
+        except ValueError:
+            sys.exit("⚠️ ខែដែលបានបញ្ចូលមិនត្រឹមត្រូវទេ")
+    else:
+        report_month = today.replace(day=1)
+
+    if report_month > today.replace(day=1):
+        sys.exit("⚠️ មិនអាចបង្កើតរបាយការណ៍សម្រាប់ខែអនាគតបានទេ")
+
+    global WEEKS
+    WEEKS = weeks_for_month(report_month.year, report_month.month)
+    month_start, month_end = WEEKS[0]["start"], WEEKS[-1]["end"]
+    hi = min(month_end, today) if report_month.year == today.year and report_month.month == today.month else month_end
+
     task_chat, team_chat = load_mappings()
     if not task_chat:
         sys.exit("⚠️ រកមិនឃើញ Sheet→ChatID ក្នុង Tab 'Team chat IDs'")
 
-    lo, hi = WEEKS[0]["start"], min(WEEKS[-1]["end"], today)
-    log_dates = load_log_dates(lo, hi)
-    df = collect_tasks(list(dict.fromkeys(task_chat)), lo, hi, log_dates)
+    log_dates = load_log_dates(month_start, hi)
+    df = collect_tasks(list(dict.fromkeys(task_chat)), month_start, hi, log_dates)
+    if df.empty:
+        print("⚠️ មិនបានទាញទិន្នន័យ Task ណាមួយទេ; សូមពិនិត្យ Spreadsheet ID, ឈ្មោះ Tab និងការចូលមើល Sheet")
 
     with Sender(args.dry_run, args.test_chat) as s:
         if args.mode == "daily":
-            day = date.fromisoformat(args.date) if args.date else today
+            if args.date:
+                try:
+                    day = date.fromisoformat(args.date)
+                except ValueError:
+                    sys.exit("⚠️ ទម្រង់ --date មិនត្រឹមត្រូវទេ។ ប្រើ YYYY-MM-DD")
+                if day < month_start or day > month_end:
+                    sys.exit(f"⚠️ ថ្ងៃដែលបានជ្រើសមិនស្ថិតក្នុងខែរបាយការណ៍ {report_month:%Y-%m} ទេ")
+            elif report_month.year == today.year and report_month.month == today.month:
+                day = today
+            else:
+                approved_dates = [value for value in df.loc[df["Approved"], "Date"] if isinstance(value, date)]
+                day = max(approved_dates) if approved_dates else month_end
+                print(f"ℹ️ បង្ហាញថ្ងៃ Approved ចុងក្រោយក្នុងខែ {report_month:%Y-%m}: {day}")
+
             daily_reports = build_daily_reports(df, day)
             for team, (styler, df_daily, caption) in daily_reports.items():
                 img_path = f"daily_{team}.png"
@@ -459,14 +514,19 @@ def main():
             return
 
         if args.mode == "weekly":
-            wi = (args.week - 1) if args.week else week_index(today)
+            if args.week is not None:
+                wi = args.week - 1
+            elif report_month.year == today.year and report_month.month == today.month:
+                wi = week_index(today)
+            else:
+                wi = len(WEEKS) - 1
             if not 0 <= wi < len(WEEKS):
-                sys.exit("ថ្ងៃនេះមិនស្ថិតក្នុងសប្តាហ៍ណាទេ សូមប្រើ --week 1..4")
+                sys.exit(f"⚠️ លេខសប្តាហ៍មិនត្រឹមត្រូវទេ; ខែក្រោមនេះមាន {len(WEEKS)} សប្តាហ៍។ ប្រើ --week 1..{len(WEEKS)}")
             table, flags, title, caption, team_texts = build_weekly(df, wi)
-            path = f"weekly_{wi + 1}.png"
+            path = f"weekly_{report_month:%Y_%m}_{wi + 1}.png"
         else:
             table, flags, title, caption, team_texts = build_final(df)
-            path = "final_report.png"
+            path = f"final_report_{report_month:%Y_%m}.png"
 
         if not args.no_teams:
             for team in VALID_TEAMS:
