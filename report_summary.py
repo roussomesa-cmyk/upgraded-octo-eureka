@@ -134,14 +134,14 @@ def load_team_chat_ids(mapping):
 
 def split_sites_into_weeks(team_df, task_code):
     """Sort by Site name, then divide sites as evenly as possible among weeks."""
-    count_weeks = task_weeks(task_code)
+    weeks_count = task_weeks(task_code)
     sites = team_df.copy()
     sites["_site_sort"] = sites["Site name"].fillna("").astype(str).str.strip().str.casefold()
     sites = sites[sites["_site_sort"] != ""].sort_values("_site_sort", kind="stable")
     sites = sites.drop(columns=["_site_sort"]).reset_index(drop=True)
-    quotient, remainder = divmod(len(sites), count_weeks)
+    quotient, remainder = divmod(len(sites), weeks_count)
     result, start = {}, 0
-    for week in range(1, count_weeks + 1):
+    for week in range(1, weeks_count + 1):
         size = quotient + (1 if week <= remainder else 0)
         result[week] = sites.iloc[start:start + size].copy()
         start += size
@@ -165,8 +165,10 @@ def load_warning_state():
 
 
 def save_warning_state(state):
-    with open(WARNING_STATE_FILE, "w", encoding="utf-8") as handle:
+    temp_path = WARNING_STATE_FILE + ".tmp"
+    with open(temp_path, "w", encoding="utf-8") as handle:
         json.dump(state, handle, ensure_ascii=False, indent=2)
+    os.replace(temp_path, WARNING_STATE_FILE)
 
 
 def weekly_team_table(items):
@@ -232,29 +234,20 @@ def make_warning_letter_docx(teams, progress, today, week_number):
     approval = doc.add_paragraph()
     approval.paragraph_format.space_before = Pt(10)
     approval.add_run(f"APPROVAL\nDate: {today.strftime('%d/%m/%Y')}\nDIRECTOR").bold = True
-
     title = doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     title.paragraph_format.space_before = Pt(14)
-    title.add_run("DRAFT — WARNING LETTER").bold = True
-    title.runs[0].font.size = Pt(16)
-    doc.add_paragraph(
-        "Subject: Warning letter for Team Leaders whose teams have remained below 50% "
-        "of the weekly target for the third time."
-    ).runs[0].bold = True
+    title_run = title.add_run("DRAFT — WARNING LETTER")
+    title_run.bold = True
+    title_run.font.size = Pt(16)
+
+    doc.add_paragraph("Subject: Warning letter for Team Leaders whose teams have remained below 50% of the weekly target for the third time.").runs[0].bold = True
     doc.add_paragraph("To: Board of Directors, Technical Center")
-    doc.add_paragraph(
-        "Based on the weekly progress reports, the teams listed below achieved less than "
-        "50% of their assigned target for the third recorded week. This is a draft for review "
-        "and is not effective until approved and signed by the Director."
-    )
+    doc.add_paragraph("Based on the weekly progress reports, the teams listed below achieved less than 50% of their assigned target for the third recorded week. This is a draft for review and is not effective until approved and signed by the Director.")
     doc.add_paragraph("+ Warning to:").runs[0].bold = True
     doc.add_paragraph("Kompong Cham Branch would like to submit this draft warning to the Team Leaders listed below.")
     doc.add_paragraph("+ Reasons for warning").runs[0].bold = True
-    doc.add_paragraph(
-        "1. The team has remained below 50% of its weekly target for the third recorded time. "
-        "The team leader is requested to explain the root cause and corrective actions."
-    )
+    doc.add_paragraph("1. The team has remained below 50% of its weekly target for the third recorded time. The team leader is requested to explain the root cause and corrective actions.")
 
     table = doc.add_table(rows=1, cols=6)
     table.style = "Table Grid"
@@ -262,12 +255,10 @@ def make_warning_letter_docx(teams, progress, today, week_number):
         set_cell_text(cell, label, True, 9)
     for index, team in enumerate(teams, start=1):
         target, result, percent = progress[team]
-        cells = table.add_row().cells
         values = [index, team, TEAM_LEADERS[team], "Team Leader",
-                  f"Below 50% for the third recorded week (week {week_number}); weekly result "
-                  f"{result}/{target} ({percent}%). Please explain the cause and corrective action.",
+                  f"Below 50% for the third recorded week (week {week_number}); weekly result {result}/{target} ({percent}%). Please explain the cause and corrective action.",
                   "Proposed: Deduct 1KI, subject to Director approval"]
-        for cell, value in zip(cells, values):
+        for cell, value in zip(table.add_row().cells, values):
             set_cell_text(cell, value, size=8)
 
     doc.add_paragraph("+ Reminders for next time").runs[0].bold = True
@@ -276,10 +267,7 @@ def make_warning_letter_docx(teams, progress, today, week_number):
     doc.add_paragraph("- Kindly request the Board of Directors to review and approve this draft.")
     signature = doc.add_paragraph()
     signature.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    signature.add_run(
-        f"Date: {today.strftime('%d/%m/%Y')}\nPrepared by\nPOWER STAFF\n\n\n"
-        "____________________________\nDirector (Name and Signature)"
-    )
+    signature.add_run(f"Date: {today.strftime('%d/%m/%Y')}\nPrepared by\nPOWER STAFF\n\n\n____________________________\nDirector (Name and Signature)")
     doc.add_paragraph("Recipients:").runs[0].bold = True
     doc.add_paragraph("- BOD of GIS (for review);\n- HR Dept.;\n- Archive: Admin, Kompong Cham Branch.")
     filename = f"warning_letter_draft_week_{week_number}_{today.isoformat()}.docx"
@@ -302,12 +290,12 @@ def send_weekly_team_reports(client, team_rows, team_chats, today, week_number, 
         dfi.export(style_table(weekly_team_table(items), title).hide(axis="index"), image_path, max_rows=-1)
         try:
             client.send_file(chat_id, image_path, caption=f"{title} — week {week_number}")
-            text = (f"Weekly reminder {week_number}: {team} ({TEAM_LEADERS[team]})\n"
-                    f"This week's result: {result}/{target} ({percent}%).\n")
-            text += ("Below 50%. Please state the reason and corrective action in this group."
-                     if target and percent < LOW_PROGRESS_THRESHOLD else
-                     "Please continue tracking the target and complete the work on schedule.")
-            client.send_message(chat_id, text)
+            reminder = (f"Weekly reminder {week_number}: {team} ({TEAM_LEADERS[team]})\n"
+                        f"This week's result: {result}/{target} ({percent}%).\n")
+            reminder += ("Below 50%. Please state the reason and corrective action in this group."
+                         if target and percent < LOW_PROGRESS_THRESHOLD else
+                         "Please continue tracking the target and complete the work on schedule.")
+            client.send_message(chat_id, reminder)
         except Exception as exc:
             print(f"⚠️ Failed to send weekly report/reminder to {team}: {exc}")
 
@@ -325,10 +313,7 @@ def send_weekly_team_reports(client, team_rows, team_chats, today, week_number, 
     if candidates:
         try:
             path = make_warning_letter_docx(candidates, candidate_progress, today, week_number)
-            client.send_file(MAIN_GROUP_ID, path, caption=(
-                "DRAFT WARNING LETTER — for Director review and signature only. "
-                "No penalty is effective before approval."
-            ))
+            client.send_file(MAIN_GROUP_ID, path, caption="DRAFT WARNING LETTER — for Director review and signature only. No penalty is effective before approval.")
             for team in candidates:
                 warning_state[team]["draft_sent"] = True
         except Exception as exc:
@@ -392,17 +377,14 @@ def main():
                 groups = split_sites_into_weeks(team_df, task_code)
                 stats = {}
                 for week, week_df in groups.items():
-                    target = len(week_df)
-                    result = approved_count(week_df)
+                    target, result = len(week_df), approved_count(week_df)
                     stats[week] = {"Target": target, "Result": result,
                                    "Percent": round(result * 100 / target) if target else 0}
                 team_rows[team].append({"Task": task_code, "Weeks": task_weeks(task_code), "Stats": stats})
                 overall[team]["Target"] += len(team_df)
                 overall[team]["Result"] += approved_count(team_df)
 
-            columns = [col for col in ["No.", "Group task", "Branch", "Site name", "Serial",
-                "Q'ty task/Local task", "Result", "Remark", "Last date record", "History Task",
-                "Team", "Name staff"] if col in task_df.columns]
+            columns = [col for col in ["No.", "Group task", "Branch", "Site name", "Serial", "Q'ty task/Local task", "Result", "Remark", "Last date record", "History Task", "Team", "Name staff"] if col in task_df.columns]
             details = task_df[columns].copy()
             if now.hour < 12:
                 details = details[details["Result"].astype(str).str.strip().str.casefold() != "approved"]
@@ -414,6 +396,7 @@ def main():
                 except Exception as exc:
                     print(f"⚠️ Failed to send task detail for {task_code}: {exc}")
 
+        # Weekly team reports and reminders are sent each Saturday during the four-week period.
         if today.weekday() == 5 and 1 <= current_week <= DEFAULT_WEEKS:
             send_weekly_team_reports(client, team_rows, team_chats, today, current_week, warning_state)
 
