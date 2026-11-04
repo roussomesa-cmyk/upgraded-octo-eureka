@@ -1,5 +1,6 @@
 from datetime import datetime, timezone, timedelta
 import io
+import json
 import os
 import re
 
@@ -25,8 +26,9 @@ START_DATE = datetime.strptime(os.environ.get("START_DATE") or "2026-11-02", "%Y
 DEFAULT_WEEKS = 4
 TASK_WEEKS = {"A2": 3}
 LOW_PROGRESS_THRESHOLD = 50
+WARNING_STATE_FILE = os.environ.get("WARNING_STATE_FILE", "weekly_warning_state.json")
 
-COMMON_CAPTION_STYLE = {
+CAPTION_STYLE = {
     "selector": "caption",
     "props": [
         ("caption-side", "top"), ("font-size", "22px"),
@@ -51,10 +53,7 @@ def normalize_team(name):
 
 
 def fetch_csv(sheet_name_or_gid):
-    url = (
-        f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}"
-        f"/gviz/tq?tqx=out:csv&sheet={sheet_name_or_gid}"
-    )
+    url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name_or_gid}"
     try:
         response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
     except requests.RequestException as exc:
@@ -66,20 +65,19 @@ def fetch_csv(sheet_name_or_gid):
 
     lines = response.text.splitlines()
     header_row_idx = 0
-    header_keywords = {"site name", "team", "sheet", "chatid", "no", "no."}
+    keywords = {"site name", "team", "sheet", "chatid", "no", "no."}
     for idx, line in enumerate(lines[:15]):
         cells = [cell.strip().strip('"').lower() for cell in line.split(",")]
-        if any(cell in header_keywords for cell in cells):
+        if any(cell in keywords for cell in cells):
             header_row_idx = idx
             break
-
     try:
         df = pd.read_csv(io.StringIO(response.text), skiprows=header_row_idx).dropna(how="all")
     except (pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
         print(f"⚠️ Could not parse sheet '{sheet_name_or_gid}': {exc}")
         return None
-    df.columns = df.columns.astype(str).str.strip()
 
+    df.columns = df.columns.astype(str).str.strip()
     rename = {}
     for col in df.columns:
         lower = col.lower().strip()
@@ -98,22 +96,17 @@ def fetch_csv(sheet_name_or_gid):
         elif lower in ("name staff", "staff name"):
             rename[col] = "Name staff"
     df = df.rename(columns=rename)
-    if df.columns.duplicated().any():
-        df = df.loc[:, ~df.columns.duplicated()]
-    return df
+    return df.loc[:, ~df.columns.duplicated()]
 
 
 def get_task_title_from_sheet(sheet_name_or_gid):
-    url = (
-        f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}"
-        f"/gviz/tq?tqx=out:csv&sheet={sheet_name_or_gid}"
-    )
+    url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name_or_gid}"
     try:
         response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
         if response.status_code == 200 and response.text.splitlines():
-            first = response.text.splitlines()[0].replace('"', "").split(",")[0].strip()
-            if first and not first.isdigit():
-                return first
+            title = response.text.splitlines()[0].replace('"', "").split(",")[0].strip()
+            if title and not title.isdigit():
+                return title
     except requests.RequestException as exc:
         print(f"⚠️ Title lookup failed for '{sheet_name_or_gid}': {exc}")
     return f"Task {sheet_name_or_gid}"
@@ -121,7 +114,7 @@ def get_task_title_from_sheet(sheet_name_or_gid):
 
 def style_table(df, title):
     return df.style.set_caption(title).set_table_styles([
-        COMMON_CAPTION_STYLE,
+        CAPTION_STYLE,
         {"selector": "th", "props": [("background-color", "#369388"), ("color", "black"),
                                         ("font-weight", "bold"), ("text-align", "center"),
                                         ("border", "1px solid black"), ("padding", "6px")]},
@@ -130,124 +123,164 @@ def style_table(df, title):
     ])
 
 
-def load_team_chat_ids(df_mapping):
-    result = {}
-    if df_mapping is None or not {"Column A", "Column B"}.issubset(df_mapping.columns):
-        print("⚠️ Team chat columns 'Column A' / 'Column B' not found; team reports disabled.")
-        return result
-    for _, row in df_mapping.dropna(subset=["Column A", "Column B"]).iterrows():
+def load_team_chat_ids(mapping):
+    chats = {}
+    if mapping is None or not {"Column A", "Column B"}.issubset(mapping.columns):
+        print("⚠️ 'Column A' / 'Column B' not found; team-group reports disabled.")
+        return chats
+    for _, row in mapping.dropna(subset=["Column A", "Column B"]).iterrows():
         team = normalize_team(row["Column A"])
         if team not in VALID_TEAMS:
             continue
         try:
-            result[team] = int(float(str(row["Column B"]).strip()))
-        except (TypeError, ValueError):
+            chats[team] = int(float(str(row["Column B"]).strip()))
+        except (ValueError, TypeError):
             continue
-    return result
+    return chats
 
 
-def split_sites_into_weeks(df_team, task_code):
-    """Sort Site name and split its rows into equal, consecutive weekly target groups.
-
-    Any remainder is assigned one row at a time to the earliest weeks. Thus, for
-    example, 10 sites over four weeks are divided 3, 3, 2, 2. A2 is divided into
-    three groups. The original sheet order breaks ties between identical names.
-    """
+def split_sites_into_weeks(team_df, task_code):
+    """Sort by Site name, then divide sites as evenly as possible among weeks."""
     weeks_count = task_weeks(task_code)
-    if "Site name" not in df_team.columns:
-        return {week: df_team.iloc[0:0].copy() for week in range(1, weeks_count + 1)}
-
-    sites = df_team.copy()
+    sites = team_df.copy()
     sites["_site_sort"] = sites["Site name"].fillna("").astype(str).str.strip().str.casefold()
     sites = sites[sites["_site_sort"] != ""].sort_values("_site_sort", kind="stable")
     sites = sites.drop(columns=["_site_sort"]).reset_index(drop=True)
-
     quotient, remainder = divmod(len(sites), weeks_count)
-    result = {}
-    start = 0
+    result, start = {}, 0
     for week in range(1, weeks_count + 1):
-        size = quotient + (1 if week <= remainder else 0)
-        result[week] = sites.iloc[start:start + size].copy()
-        start += size
+        count = quotient + (1 if week <= remainder else 0)
+        result[week] = sites.iloc[start:start + count].copy()
+        start += count
     return result
 
 
-def weekly_result(week_df):
-    if week_df.empty or "Result" not in week_df.columns:
+def approved_count(df):
+    if df.empty or "Result" not in df:
         return 0
-    return int(week_df["Result"].fillna("").astype(str).str.strip().str.casefold().eq("approved").sum())
+    return int(df["Result"].fillna("").astype(str).str.strip().str.casefold().eq("approved").sum())
 
 
-def build_weekly_team_rows(team_task_rows):
+def load_warning_state():
+    try:
+        with open(WARNING_STATE_FILE, encoding="utf-8") as handle:
+            state = json.load(handle)
+        return state if isinstance(state, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:
+        print(f"ℹ️ Could not load warning history; starting new tracking file: {exc}")
+        return {}
+
+
+def save_warning_state(state):
+    with open(WARNING_STATE_FILE, "w", encoding="utf-8") as handle:
+        json.dump(state, handle, ensure_ascii=False, indent=2)
+
+
+def weekly_team_table(items):
     rows = []
-    for idx, item in enumerate(team_task_rows, start=1):
-        row = {"No.": idx, "Task": item["Task"]}
-        for week in range(1, item["Weeks"] + 1):
-            stats = item["Stats"][week]
-            row[f"សប្តាហ៍ទី {week} Target"] = stats["Target"]
-            row[f"សប្តាហ៍ទី {week} Result"] = stats["Result"]
-            row[f"សប្តាហ៍ទី {week} %"] = f"{stats['Percent']}%"
+    for index, item in enumerate(items, start=1):
+        row = {"No.": index, "Task": item["Task"]}
+        for week in range(1, DEFAULT_WEEKS + 1):
+            data = item["Stats"].get(week)
+            row[f"Week {week} Target"] = data["Target"] if data else "—"
+            row[f"Week {week} Result"] = data["Result"] if data else "—"
+            row[f"Week {week} %"] = f"{data['Percent']}%" if data else "—"
         rows.append(row)
 
-    if not rows:
-        return pd.DataFrame()
     total = {"No.": "", "Task": "TOTAL"}
     for week in range(1, DEFAULT_WEEKS + 1):
-        stats = [item["Stats"][week] for item in team_task_rows if week in item["Stats"]]
+        stats = [item["Stats"][week] for item in items if week in item["Stats"]]
         target = sum(value["Target"] for value in stats)
         result = sum(value["Result"] for value in stats)
-        total[f"សប្តាហ៍ទី {week} Target"] = target
-        total[f"សប្តាហ៍ទី {week} Result"] = result
-        total[f"សប្តាហ៍ទី {week} %"] = f"{round(result * 100 / target) if target else 0}%"
+        total[f"Week {week} Target"] = target
+        total[f"Week {week} Result"] = result
+        total[f"Week {week} %"] = f"{round(result * 100 / target) if target else 0}%"
     rows.append(total)
     return pd.DataFrame(rows).fillna("")
 
 
-def send_team_reports(client, team_task_rows, team_chat_ids, today, week_now):
+def cumulative_team_progress(items, current_week):
+    target = result = 0
+    for item in items:
+        for week in range(1, min(current_week, item["Weeks"]) + 1):
+            stats = item["Stats"].get(week, {"Target": 0, "Result": 0})
+            target += stats["Target"]
+            result += stats["Result"]
+    return target, result, round(result * 100 / target) if target else 0
+
+
+def make_warning_draft(teams, today, week_number):
+    entries = [
+        f"{i}. {team} | {TEAM_LEADERS[team]} | Team Leader | "
+        "លទ្ធផលក្រោម 50% ជាលើកទី 3 | ស្នើពិន័យ៖ កាត់ 1KI (រង់ចាំការអនុម័ត)"
+        for i, team in enumerate(teams, start=1)
+    ]
+    return (
+        "សេចក្តីព្រាងលិខិតព្រមាន — មិនទាន់មានសុពលភាព រង់ចាំនាយកពិនិត្យ និងចុះហត្ថលេខា\n\n"
+        "ប្រធានបទ៖ សេចក្តីព្រាងលិខិតព្រមានចំពោះក្រុមដែលលទ្ធផលការងារក្រោម 50% ចំនួន 3 សប្តាហ៍\n"
+        "ជូន៖ ក្រុមប្រឹក្សាភិបាល / នាយកពិនិត្យ និងអនុម័ត\n"
+        f"កាលបរិច្ឆេទ៖ {today.strftime('%d/%m/%Y')} | សប្តាហ៍ទី {week_number}\n\n"
+        "ក្រុមដែលដល់លក្ខខណ្ឌ៖\n" + "\n".join(entries) + "\n\n"
+        "មូលហេតុ៖ លទ្ធផលការងារដែលបានអនុម័តស្ថិតក្រោម 50% នៃ Target ក្នុងសប្តាហ៍ដែលបានរាយ។\n"
+        "សំណើ៖ សូមនាយកពិនិត្យមូលហេតុ និងសម្រេចលើការចេញលិខិតព្រមាន និងសំណើកាត់ 1KI។\n\n"
+        "សេចក្តីព្រាងនេះមិនមែនជាលិខិតផ្លូវការ និងមិនអនុវត្តការកាត់ 1KI ដោយស្វ័យប្រវត្តិទេ។\n"
+        "ហត្ថលេខានាយក៖ ____________________    កាលបរិច្ឆេទ៖ ______________"
+    )
+
+
+def send_weekly_team_reports(client, team_rows, team_chats, today, week_number, warning_state):
+    warning_candidates = []
     for team in VALID_TEAMS:
-        items = team_task_rows.get(team, [])
-        chat_id = team_chat_ids.get(team)
+        items = team_rows.get(team, [])
+        chat_id = team_chats.get(team)
         if not items or not chat_id:
             if items and not chat_id:
                 print(f"⚠️ No group chat ID for {team}; weekly report not sent.")
             continue
-        table = build_weekly_team_rows(items)
-        title = f"របាយការណ៍ {team} បែងចែកតាម Site name — សប្តាហ៍ទី {week_now}"
-        image_path = f"team_summary_{team}.png"
-        dfi.export(style_table(table, title).hide(axis="index"), image_path, max_rows=-1)
-        try:
-            client.send_file(chat_id, image_path, caption=title)
-            print(f"✅ Sent weekly target/result/% report to {team} group ({chat_id}).")
-        except Exception as exc:
-            print(f"⚠️ Failed to send weekly report to {team}: {exc}")
 
-        # On Saturdays, ask the team leader to explain progress below 50%.
-        if today.weekday() == 5 and 1 <= week_now <= DEFAULT_WEEKS:
-            targets = results = 0
-            for item in items:
-                for week in range(1, min(week_now, item["Weeks"]) + 1):
-                    stats = item["Stats"].get(week, {"Target": 0, "Result": 0})
-                    targets += stats["Target"]
-                    results += stats["Result"]
-            percent = round(results * 100 / targets) if targets else 0
-            if targets and percent < LOW_PROGRESS_THRESHOLD:
-                leader = TEAM_LEADERS.get(team, "មេក្រុម")
-                alert = (
-                    f"ការរំលឹកលើកទី១៖ {team} ({leader}) មានលទ្ធផល {percent}% "
-                    f"ក្រោមគោលដៅ 50% គិតត្រឹមសប្តាហ៍ទី {week_now}.\n"
-                    "សូមក្រុមបញ្ជាក់មូលហេតុ និងផែនការដោះស្រាយនៅក្នុងក្រុមនេះ។ "
-                    "សូមអ្នកគ្រប់គ្រងពិនិត្យ និងសម្រេចជំហានបន្ទាប់។"
-                )
-                try:
-                    client.send_message(chat_id, alert)
-                except Exception as exc:
-                    print(f"⚠️ Failed to send Saturday progress reminder to {team}: {exc}")
+        target, result, percent = cumulative_team_progress(items, week_number)
+        title = f"របាយការណ៍ {team} — Target, Result និង % តាម Site name"
+        image_path = f"team_summary_{team}.png"
+        dfi.export(style_table(weekly_team_table(items), title).hide(axis="index"), image_path, max_rows=-1)
+        try:
+            client.send_file(chat_id, image_path, caption=f"{title} — សប្តាហ៍ទី {week_number}")
+            message = (
+                f"សាររំលឹកប្រចាំសប្តាហ៍ទី {week_number}: {team} ({TEAM_LEADERS[team]})\n"
+                f"លទ្ធផលសរុប៖ {result}/{target} ({percent}%).\n"
+            )
+            if target and percent < LOW_PROGRESS_THRESHOLD:
+                message += "លទ្ធផលក្រោម 50%។ សូមបញ្ជាក់មូលហេតុ និងផែនការដោះស្រាយក្នុងក្រុម។"
+            else:
+                message += "សូមបន្តតាមដានគោលដៅ និងបញ្ចប់ការងារតាមផែនការ។"
+            client.send_message(chat_id, message)
+        except Exception as exc:
+            print(f"⚠️ Failed to send weekly report/reminder to {team}: {exc}")
+
+        if target and percent < LOW_PROGRESS_THRESHOLD:
+            state = warning_state.setdefault(team, {"low_weeks": 0, "last_counted_week": 0, "draft_sent": False})
+            if int(state.get("last_counted_week", 0)) < week_number:
+                state["low_weeks"] = int(state.get("low_weeks", 0)) + 1
+                state["last_counted_week"] = week_number
+            if state["low_weeks"] >= 3 and not state.get("draft_sent", False):
+                warning_candidates.append(team)
+        else:
+            state = warning_state.setdefault(team, {"low_weeks": 0, "last_counted_week": 0, "draft_sent": False})
+            state["last_counted_week"] = max(int(state.get("last_counted_week", 0)), week_number)
+
+    if warning_candidates:
+        try:
+            client.send_message(MAIN_GROUP_ID, make_warning_draft(warning_candidates, today, week_number))
+            for team in warning_candidates:
+                warning_state[team]["draft_sent"] = True
+            print(f"✅ Sent unsigned warning-letter draft to main group for: {warning_candidates}")
+        except Exception as exc:
+            print(f"⚠️ Failed to send warning-letter draft: {exc}")
 
 
 def main():
     api_id_raw = os.environ.get("TELEGRAM_API_ID")
     api_hash = os.environ.get("TELEGRAM_API_HASH")
-    session_str = os.environ.get("TELEGRAM_SESSION")
+    session_string = os.environ.get("TELEGRAM_SESSION")
     if not api_id_raw:
         raise ValueError("TELEGRAM_API_ID is missing or empty in environment/secrets")
     try:
@@ -256,85 +289,68 @@ def main():
         raise ValueError(f"TELEGRAM_API_ID is not a valid integer: '{api_id_raw}'") from exc
     if not api_hash:
         raise ValueError("TELEGRAM_API_HASH is missing or empty in environment/secrets")
-    if not session_str:
+    if not session_string:
         raise ValueError("TELEGRAM_SESSION is missing or empty in environment/secrets")
 
     mapping = fetch_csv("Team%20chat%20IDs")
-    task_chat_ids = {}
+    task_chats = {}
     if mapping is not None and {"Sheet", "ChatID"}.issubset(mapping.columns):
         for _, row in mapping.dropna(subset=["Sheet", "ChatID"]).iterrows():
-            code = str(row["Sheet"]).strip()
             try:
-                task_chat_ids[code] = int(float(str(row["ChatID"]).strip()))
+                task_chats[str(row["Sheet"]).strip()] = int(float(str(row["ChatID"]).strip()))
             except (TypeError, ValueError):
                 continue
-    if not task_chat_ids:
+    if not task_chats:
         print("⚠️ No task-to-chat mappings found in 'Team chat IDs'; nothing to send.")
         return
 
-    team_chat_ids = load_team_chat_ids(mapping)
+    team_chats = load_team_chat_ids(mapping)
     cambodia_tz = timezone(timedelta(hours=7))
     now = datetime.now(cambodia_tz)
     today = now.date()
-    week_now = get_current_week(today)
-    is_morning = now.hour < 12
-    print(f"ℹ️ Current week from START_DATE {START_DATE}: {week_now}")
+    current_week = get_current_week(today)
+    warning_state = load_warning_state()
+    team_rows = {team: [] for team in VALID_TEAMS}
+    overall = {team: {"Target": 0, "Result": 0} for team in VALID_TEAMS}
 
-    team_task_rows = {team: [] for team in VALID_TEAMS}
-    overall_stats = {team: {"Target": 0, "Approved": 0} for team in VALID_TEAMS}
-
-    with TelegramClient(StringSession(session_str), api_id, api_hash) as client:
-        for task_code, task_chat_id in task_chat_ids.items():
-            df_task = fetch_csv(task_code)
-            if df_task is None or df_task.empty:
+    with TelegramClient(StringSession(session_string), api_id, api_hash) as client:
+        for task_code, task_chat_id in task_chats.items():
+            task_df = fetch_csv(task_code)
+            if task_df is None or task_df.empty:
                 print(f"⚠️ Skipping '{task_code}': sheet is empty or failed to load.")
                 continue
-            if not {"Team", "Site name"}.issubset(df_task.columns):
-                print(f"⚠️ Skipping '{task_code}': 'Team' or 'Site name' column is missing.")
-                continue
-            if "Result" not in df_task.columns:
-                print(f"⚠️ Skipping '{task_code}': 'Result' column is missing; cannot calculate progress.")
+            required = {"Team", "Site name", "Result"}
+            if not required.issubset(task_df.columns):
+                print(f"⚠️ Skipping '{task_code}': required Team/Site name/Result column is missing.")
                 continue
 
-            df_task = df_task.copy()
-            df_task["Team"] = df_task["Team"].fillna("").astype(str).str.strip()
-            df_task["Site name"] = df_task["Site name"].fillna("").astype(str).str.strip()
-            df_task = df_task[df_task["Team"].isin(VALID_TEAMS) & df_task["Site name"].ne("")]
+            task_df = task_df.copy()
+            task_df["Team"] = task_df["Team"].fillna("").astype(str).str.strip()
+            task_df["Site name"] = task_df["Site name"].fillna("").astype(str).str.strip()
+            task_df = task_df[task_df["Team"].isin(VALID_TEAMS) & task_df["Site name"].ne("")]
             title = f"{task_code}. {get_task_title_from_sheet(task_code)}"
 
             for team in VALID_TEAMS:
-                df_team = df_task[df_task["Team"] == team].copy()
-                if df_team.empty:
+                team_df = task_df[task_df["Team"] == team].copy()
+                if team_df.empty:
                     continue
-                week_groups = split_sites_into_weeks(df_team, task_code)
+                groups = split_sites_into_weeks(team_df, task_code)
                 stats = {}
-                for week, week_df in week_groups.items():
+                for week, week_df in groups.items():
                     target = len(week_df)
-                    approved = weekly_result(week_df)
-                    stats[week] = {
-                        "Target": target,
-                        "Result": approved,
-                        "Percent": round(approved * 100 / target) if target else 0,
-                    }
-                team_task_rows[team].append({
-                    "Task": task_code,
-                    "Weeks": task_weeks(task_code),
-                    "Stats": stats,
-                })
+                    result = approved_count(week_df)
+                    stats[week] = {"Target": target, "Result": result,
+                                   "Percent": round(result * 100 / target) if target else 0}
+                team_rows[team].append({"Task": task_code, "Weeks": task_weeks(task_code), "Stats": stats})
+                overall[team]["Target"] += len(team_df)
+                overall[team]["Result"] += approved_count(team_df)
 
-                total_target = len(df_team)
-                total_approved = weekly_result(df_team)
-                overall_stats[team]["Target"] += total_target
-                overall_stats[team]["Approved"] += total_approved
-
-            # Keep sending the familiar task detail image to its configured task group.
-            detail_columns = [c for c in [
-                "No.", "Group task", "Branch", "Site name", "Serial",
-                "Q'ty task/Local task", "Result", "Remark", "Last date record",
-                "History Task", "Team", "Name staff",
-            ] if c in df_task.columns]
-            details = df_task[detail_columns].copy()
-            if is_morning:
+            columns = [column for column in [
+                "No.", "Group task", "Branch", "Site name", "Serial", "Q'ty task/Local task",
+                "Result", "Remark", "Last date record", "History Task", "Team", "Name staff",
+            ] if column in task_df.columns]
+            details = task_df[columns].copy()
+            if now.hour < 12:
                 details = details[details["Result"].astype(str).str.strip().str.casefold() != "approved"]
             if not details.empty:
                 image_path = f"detail_{task_code}.png"
@@ -342,31 +358,31 @@ def main():
                 try:
                     client.send_file(task_chat_id, image_path, caption=title)
                 except Exception as exc:
-                    print(f"⚠️ Failed to send detail report for {task_code}: {exc}")
+                    print(f"⚠️ Failed to send task detail for {task_code}: {exc}")
 
-        if is_morning:
-            if 1 <= week_now <= DEFAULT_WEEKS:
-                send_team_reports(client, team_task_rows, team_chat_ids, today, week_now)
-            else:
-                print(f"ℹ️ Week {week_now} is outside the four-week reporting period.")
-        else:
-            summary_rows = []
+        # Send weekly reports and reminders each Saturday, only within the four-week period.
+        if today.weekday() == 5 and 1 <= current_week <= DEFAULT_WEEKS:
+            send_weekly_team_reports(client, team_rows, team_chats, today, current_week, warning_state)
+
+        if now.hour >= 12:
+            rows = []
             total_target = total_result = 0
             for index, team in enumerate(VALID_TEAMS, start=1):
-                target = overall_stats[team]["Target"]
-                result = overall_stats[team]["Approved"]
+                target, result = overall[team]["Target"], overall[team]["Result"]
                 percent = round(result * 100 / target) if target else 0
-                summary_rows.append({"No.": index, "Team": team, "Target": target,
-                                     "Result": result, "%": f"{percent}%"})
+                rows.append({"No.": index, "Team": team, "Target": target,
+                             "Result": result, "%": f"{percent}%"})
                 total_target += target
                 total_result += result
-            summary_rows.append({"No.": "TOTAL", "Team": "", "Target": total_target,
-                                 "Result": total_result,
-                                 "%": f"{round(total_result * 100 / total_target) if total_target else 0}%"})
-            summary = pd.DataFrame(summary_rows)
+            rows.append({"No.": "TOTAL", "Team": "", "Target": total_target,
+                         "Result": total_result,
+                         "%": f"{round(total_result * 100 / total_target) if total_target else 0}%"})
             image_path = "overall_report.png"
+            summary = pd.DataFrame(rows)
             dfi.export(style_table(summary, f"របាយការណ៍សរុប M{now.month}").hide(axis="index"), image_path, max_rows=-1)
-            client.send_file(MAIN_GROUP_ID, image_path, caption=f"របាយការណ៍សរុប M{now.month} — Evening Shift")
+            client.send_file(MAIN_GROUP_ID, image_path, caption=f"របាយការណ៍សរុប M{now.month}")
+
+    save_warning_state(warning_state)
 
 
 if __name__ == "__main__":
