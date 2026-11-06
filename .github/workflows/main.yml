@@ -2,13 +2,21 @@ name: Daily Report Automation
 
 on:
   schedule:
-    # ម៉ោង 7:30 ព្រឹក ម៉ោងកម្ពុជា (00:30 UTC)
-    - cron: '30 0 * * *'
+    # GitHub (free) ចាប់ផ្តើមយឺតមិនទៀង → ចាប់ផ្តើមមុនម៉ោង ហើយស្គ្រីបរង់ចាំដល់ SEND_AT មុនផ្ញើ
+    # ជៀសវាងនាទី :00 / :30 ព្រោះមនុស្សច្រើនប្រើ ទើបយឺតជាង
+    - cron: '43 23 * * *'   # 06:43 ម៉ោងកម្ពុជា (មេ)
+    - cron: '13 0 * * *'    # 07:13 ម៉ោងកម្ពុជា (បម្រុង ប្រសិនបើមេមិនដំណើរការ)
   workflow_dispatch:
+
+# កុំឱ្យ ២ ដំណើរការរត់ព្រមគ្នា (បម្រុងនឹងរង់ចាំមេចប់ ហើយរំលងដោយខ្លួនឯង)
+concurrency:
+  group: daily-report
+  cancel-in-progress: false
 
 jobs:
   run-report:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -50,7 +58,8 @@ jobs:
           TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
           SPREADSHEET_ID: ${{ secrets.REPORT_SPREADSHEET_ID }}
           NOTIFY_GROUP_ID: ${{ secrets.REPORT_NOTIFY_GROUP_ID }}
-          START_DATE: '2026-11-02'
+          SEND_AT: '07:30'   # ម៉ោងផ្ញើ (ម៉ោងកម្ពុជា) — សម្រាប់ដំណើរការតាម schedule ប៉ុណ្ណោះ
+          # START_DATE ត្រូវលុបចេញ: ស្គ្រីបគណនាសប្តាហ៍ស្វ័យប្រវត្តិ
         run: python report_summary.py
 
       # រក្សាទុកប្រវត្តិ ដើម្បីប្រើក្នុងការដំណើរការលើកក្រោយ
