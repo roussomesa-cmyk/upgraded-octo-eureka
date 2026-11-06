@@ -440,7 +440,8 @@ def main():
     now = datetime.now(cambodia_tz)
     today = now.date()
     shift_name = os.environ.get("SHIFT_NAME") or (
-        "Morning Shift" if now.hour < 12 else "Afternoon Shift" if now.hour < 18 else "Evening Shift")
+        "Morning Shift" if os.environ.get("GITHUB_EVENT_NAME") == "schedule"
+        else "Afternoon Shift" if now.hour < 18 else "Evening Shift")
     current_week = get_current_week(today)
     abs_week = (today.toordinal() - 1) // 7  # លេខសប្តាហ៍ពិត (ប្រើរាប់ជាប់គ្នាឆ្លងខែ)
     warning_state = load_warning_state()
