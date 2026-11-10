@@ -57,6 +57,12 @@ def get_start_date(today):
     return start
 
 DEFAULT_WEEKS = 4
+# Task ដែលមិនទាន់មាន Chat ID ក្នុង Sheet៖ ប្រើក្រុមរបស់ Task ផ្សេង ឬ Main Group បណ្តោះអាសន្ន
+TASK_CHAT_OVERRIDE = {"B11": [-1003729578688]}   # B11 មាន 2 Chat ID ក្នុង Sheet → ប្រើតែមួយនេះ
+TASK_SAME_GROUP_AS = {"E4": "B11"}
+TASK_TO_MAIN_GROUP = ["E1", "B16"]
+# Tab ក្នុង Sheet ដែលមិនទាន់មានក្នុង "Team chat IDs" (ត្រួតពិនិត្យថាមានការងារ Team ឬអត់)
+UNMAPPED_TASK_TABS = ["B8", "B16", "C7", "C8", "C10", "E1", "E2", "E3", "E4", "E5", "E9", "E13", "E15"]
 TASK_WEEKS = {"A2": 3}
 REMINDER_THRESHOLD = 50    # Weekly reminder if team progress is below 50%
 WARNING_THRESHOLD = 80     # Warning letter if team progress is below 80% for 3 consecutive weeks
@@ -91,14 +97,29 @@ def normalize_team(name):
     return f"CHA-T{int(match.group(1)):02d}" if match else None
 
 
+_RAW_CSV = {}  # cache អត្ថបទ CSV ដើម្បីកុំទាញ Sheet ធំ (A2 មាន ~50,000 ជួរ) ពីរដង
+
+
 def fetch_csv(sheet_name_or_gid):
     url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name_or_gid}"
     headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        res = requests.get(url, headers=headers, timeout=15)
-    except requests.RequestException as e:
-        print(f"⚠️ Request failed for sheet '{sheet_name_or_gid}': {e}")
+    res = None
+    # Sheet ធំ (A2 ~50,000 ជួរ) ត្រូវការពេលលើស 15 វិនាទី → timeout វែង + ព្យាយាមម្តងទៀត
+    for attempt in range(1, 4):
+        try:
+            res = requests.get(url, headers=headers, timeout=120)
+            if res.status_code == 200:
+                break
+            print(f"⚠️ Sheet '{sheet_name_or_gid}' HTTP {res.status_code} (attempt {attempt}/3)")
+        except requests.RequestException as e:
+            print(f"⚠️ Request failed for sheet '{sheet_name_or_gid}' (attempt {attempt}/3): {e}")
+            res = None
+        time.sleep(3 * attempt)
+    if res is None:
         return None
+    if res.status_code == 200:
+        res.encoding = "utf-8"
+        _RAW_CSV[str(sheet_name_or_gid)] = res.text
 
     if res.status_code == 200:
         lines = res.text.splitlines()
@@ -112,7 +133,7 @@ def fetch_csv(sheet_name_or_gid):
                 break
 
         try:
-            df = pd.read_csv(io.StringIO(res.text), skiprows=header_row_idx).dropna(how="all")
+            df = pd.read_csv(io.StringIO(res.text), skiprows=header_row_idx, dtype=str).dropna(how="all")
         except (pd.errors.EmptyDataError, pd.errors.ParserError) as e:
             print(f"⚠️ Could not parse sheet '{sheet_name_or_gid}': {e}")
             return None
@@ -152,15 +173,26 @@ def fetch_csv(sheet_name_or_gid):
 
 
 def get_task_title_from_sheet(sheet_name_or_gid):
+    cached = _RAW_CSV.get(str(sheet_name_or_gid))
+    if cached is not None:
+        lines = cached.splitlines()
+        if lines:
+            first_line = lines[0].replace('"', "").strip()
+            first_cell = first_line.split(",")[0].strip()
+            if first_cell and not first_cell.isdigit():
+                return first_cell
+        return f"Task {sheet_name_or_gid}"
+
     url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name_or_gid}"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        res = requests.get(url, headers=headers, timeout=15)
+        res = requests.get(url, headers=headers, timeout=120)
     except requests.RequestException as e:
         print(f"⚠️ Request failed for title lookup '{sheet_name_or_gid}': {e}")
         return f"Task {sheet_name_or_gid}"
 
     if res.status_code == 200:
+        res.encoding = "utf-8"
         lines = res.text.splitlines()
         if lines:
             first_line = lines[0].replace('"', "").strip()
@@ -212,7 +244,12 @@ def build_pending_list_text(df_single_team, team, task_title, show_serial=False)
         site = str(row.get("Site name", "")).strip()
         if not site:
             continue
-        serial = str(row.get("Serial", "")).strip() if (show_serial and has_serial) else ""
+        serial = ""
+        if show_serial:
+            # Sheet A2 មិនមានជួរ "Serial" ទេ: លេខ Serial ស្ថិតក្នុងជួរ "Q'ty task/Local task"
+            serial = str(row.get("Serial", "") if has_serial else row.get("Q'ty task/Local task", "")).strip()
+            if serial.endswith(".0"):
+                serial = serial[:-2]
         if serial and serial.lower() not in ("nan", "none", "#n/a", "n/a"):
             lines_data.append(f"{team} {site} - {serial}")
         else:
@@ -280,15 +317,21 @@ def save_warning_state(state):
     os.replace(temp_path, WARNING_STATE_FILE)
 
 
+def pct(result, target):
+    """ភាគរយ បង្គត់ធម្មតា (12.5 → 13) មិនមែន round() របស់ Python (12.5 → 12)"""
+    return int(result * 100 / target + 0.5) if target else 0
+
+
 def weekly_team_table(items):
     rows = []
     for index, item in enumerate(items, start=1):
         row = {"No.": index, "Task": item["Task"]}
         for week in range(1, DEFAULT_WEEKS + 1):
             data = item["Stats"].get(week)
-            row[f"Week {week} Target"] = data["Target"] if data else "—"
-            row[f"Week {week} Result"] = data["Result"] if data else "—"
-            row[f"Week {week} %"] = f"{data['Percent']}%" if data else "—"
+            has = bool(data and data["Target"])   # សប្តាហ៍គ្មាន Site (Target 0) បង្ហាញ "—" មិនមែន 0%
+            row[f"Week {week} Target"] = data["Target"] if has else "—"
+            row[f"Week {week} Result"] = data["Result"] if has else "—"
+            row[f"Week {week} %"] = f"{data['Percent']}%" if has else "—"
         rows.append(row)
 
     total = {"No.": "", "Task": "TOTAL"}
@@ -296,9 +339,9 @@ def weekly_team_table(items):
         vals = [item["Stats"][week] for item in items if week in item["Stats"]]
         target = sum(value["Target"] for value in vals)
         result = sum(value["Result"] for value in vals)
-        total[f"Week {week} Target"] = target
-        total[f"Week {week} Result"] = result
-        total[f"Week {week} %"] = f"{round(result * 100 / target) if target else 0}%"
+        total[f"Week {week} Target"] = target if target else "—"
+        total[f"Week {week} Result"] = result if target else "—"
+        total[f"Week {week} %"] = f"{pct(result, target)}%" if target else "—"
 
     rows.append(total)
     return pd.DataFrame(rows).fillna("")
@@ -312,7 +355,7 @@ def current_week_team_progress(items, week_number):
         if data:
             target += data["Target"]
             result += data["Result"]
-    percent = round(result * 100 / target) if target else 0
+    percent = pct(result, target)
     return target, result, percent
 
 
@@ -418,16 +461,33 @@ def main():
     api_id = int(api_id_raw)
 
     df_mapping = fetch_csv("Team%20chat%20IDs")
-    task_chat_ids = {}
+    task_chat_ids = {}   # code -> [chat_id, ...]  (បើ Task មួយមានច្រើន Chat ID ផ្ញើទៅទាំងអស់)
 
     if df_mapping is not None and "Sheet" in df_mapping.columns:
         df_clean = df_mapping.dropna(subset=["Sheet", "ChatID"])
         for _, row in df_clean.iterrows():
             code = str(row["Sheet"]).strip()
             try:
-                task_chat_ids[code] = int(float(str(row["ChatID"]).strip()))
+                cid = int(float(str(row["ChatID"]).strip()))
             except ValueError:
                 continue
+            ids = task_chat_ids.setdefault(code, [])
+            if cid not in ids:
+                ids.append(cid)
+        for code, ids in task_chat_ids.items():
+            if len(ids) > 1:
+                print(f"⚠️ Task {code} មាន Chat ID {len(ids)} ផ្សេងគ្នាក្នុង 'Team chat IDs' → ផ្ញើទៅទាំងអស់: {ids}")
+
+    for code, ids in TASK_CHAT_OVERRIDE.items():          # បង្ខំ Chat ID (មានអាទិភាពលើ Sheet)
+        task_chat_ids[code] = list(ids)
+
+    # Task ដែលមិនទាន់មាន Chat ID ក្នុង Sheet (បើ Sheet មានជួរសម្រាប់ Task នោះ វាមានអាទិភាពជាង)
+    for code, src in TASK_SAME_GROUP_AS.items():          # E4 → ក្រុមដូច B11
+        if code not in task_chat_ids and src in task_chat_ids:
+            task_chat_ids[code] = list(task_chat_ids[src])
+    for code in TASK_TO_MAIN_GROUP:                       # E1, B16 → Main Group សិន
+        if code not in task_chat_ids:
+            task_chat_ids[code] = [MAIN_GROUP_ID]
 
     if not task_chat_ids:
         print("⚠️ WARNING: task_chat_ids is empty.")
@@ -440,14 +500,18 @@ def main():
     now = datetime.now(cambodia_tz)
     today = now.date()
     shift_name = os.environ.get("SHIFT_NAME") or (
-        "Morning Shift" if os.environ.get("GITHUB_EVENT_NAME") == "schedule"
+        "Morning Shift" if (os.environ.get("GITHUB_EVENT_NAME") == "schedule" or os.environ.get("RUN_SOURCE") == "cron")
         else "Afternoon Shift" if now.hour < 18 else "Evening Shift")
     current_week = get_current_week(today)
     abs_week = (today.toordinal() - 1) // 7  # លេខសប្តាហ៍ពិត (ប្រើរាប់ជាប់គ្នាឆ្លងខែ)
     warning_state = load_warning_state()
 
     # ===== ផ្ញើតាមម៉ោងថេរ (GitHub Actions free ចាប់ផ្តើមយឺតមិនទៀង) =====
-    is_scheduled = os.environ.get("GITHUB_EVENT_NAME") == "schedule"
+    # ស្វ័យប្រវត្តិ = schedule របស់ GitHub ឬ ហៅពី cron ខាងក្រៅ (RUN_SOURCE=cron)។ ដំណើរការដោយដៃ = មិនមែនទាំងពីរ។
+    is_scheduled = (os.environ.get("GITHUB_EVENT_NAME") == "schedule"
+                    or os.environ.get("RUN_SOURCE") == "cron")
+    print(f"ℹ️ Run started {now:%Y-%m-%d %H:%M:%S} (Cambodia) | event={os.environ.get('GITHUB_EVENT_NAME')} "
+          f"| source={os.environ.get('RUN_SOURCE') or '-'}")
     # Cron បម្រុង: បើថ្ងៃនេះផ្ញើរួចហើយ ឱ្យរំលង (កុំផ្ញើស្ទួន)
     if is_scheduled and warning_state.get("_last_run") == today.isoformat():
         print(f"ℹ️ Already sent today ({today}) — skipping duplicate scheduled run")
@@ -465,18 +529,40 @@ def main():
 
     team_rows = {team: [] for team in VALID_TEAMS}
 
+    delivery = {}        # code -> {"groups": [...], "sent": n, "failed": n, "no_rows": bool, "fetch_failed": bool}
+    unmapped_with_rows = []
+
     with TelegramClient(StringSession(session_str), api_id, api_hash) as client:
+        # StringSession ថ្មីរាល់ដំណើរការ មិនស្គាល់ Group ណាទេ → ទាញបញ្ជី Dialogs ជាមុន ទើបផ្ញើចូល Group បាន
+        try:
+            client.get_dialogs()
+        except Exception as e:
+            print(f"⚠️ get_dialogs failed: {e}")
+        reachable = {}
+        def can_reach(cid):
+            if cid not in reachable:
+                try:
+                    client.get_input_entity(cid)
+                    reachable[cid] = True
+                except Exception as e:
+                    print(f"❌ រក Group {cid} មិនឃើញ (Chat ID ខុស ឬគណនីនេះមិនមែនជាសមាជិក): {e}")
+                    reachable[cid] = False
+            return reachable[cid]
+
         # ១. ស្កេនទាញយកទិន្នន័យពី Sheet ការងារនីមួយៗ (A1, A2, ...)
         # A2 ធ្វើមុនគេ (sorted មានស្ថិរភាព: Task ផ្សេងរក្សាលំដាប់ដើម)
-        for task_code, chat_id in sorted(task_chat_ids.items(), key=lambda kv: kv[0].strip().upper() != "A2"):
+        for task_code, chat_ids in sorted(task_chat_ids.items(), key=lambda kv: kv[0].strip().upper() != "A2"):
+            info = delivery.setdefault(task_code, {"groups": list(chat_ids), "sent": 0, "failed": 0,
+                                                   "no_rows": False, "fetch_failed": False})
+            df_task = fetch_csv(task_code)
             sheet_sub_title = get_task_title_from_sheet(task_code)
             task_title = f"{task_code}. {sheet_sub_title}"
-
-            df_task = fetch_csv(task_code)
             if df_task is None or df_task.empty:
+                info["fetch_failed"] = df_task is None
+                print(f"⚠️ Task {task_code}: មិនមានទិន្នន័យ / ទាញ Sheet មិនបាន")
                 continue
 
-            cols_to_show = ["No.", "Group task", "Branch", "Site name", "Serial", "Q'ty task/Local task", "Result", "Remark", "Last date record", "History Task", "Team"]
+            cols_to_show = ["Group task", "Branch", "Site name", "Q'ty task/Local task", "Result", "Remark", "Last date record", "History Task", "Team"]
             canon = {c.lower(): c for c in cols_to_show}
             df_task = df_task.rename(columns={c: canon[c.lower().strip()] for c in df_task.columns if c.lower().strip() in canon})
             available_cols = [c for c in cols_to_show if c in df_task.columns]
@@ -508,7 +594,13 @@ def main():
                         if pending_text:
                             full_caption += f"\n\n{pending_text}"
 
-                        send_with_caption(client, chat_id, img_path, full_caption)
+                        for chat_id in chat_ids:
+                            if can_reach(chat_id) and send_with_caption(client, chat_id, img_path, full_caption):
+                                info["sent"] += 1
+                            else:
+                                info["failed"] += 1
+                        if os.path.exists(img_path):
+                            os.remove(img_path)
 
             # ប្រមូលទិន្នន័យដើម្បីគណនាសប្តាហ៍ (Weekly Split)
             for team in VALID_TEAMS:
@@ -520,12 +612,42 @@ def main():
                     if not df_team.empty and "Site name" in df_task.columns:
                         groups = split_sites_into_weeks(df_team, task_code)
                         stats = {}
+                        # Result បំពេញតាមលំដាប់សប្តាហ៍: Site ដែល Approved បំពេញ Target សប្តាហ៍ទី 1 មុន
+                        # ទើបលើសទៅសប្តាហ៍ទី 2, 3... (មិនរាប់តាមទីតាំង Site ក្នុងបញ្ជីអក្សរក្រម)
+                        remaining = sum(approved_count(wdf) for wdf in groups.values())
                         for week, week_df in groups.items():
                             w_target = len(week_df)
-                            w_result = approved_count(week_df)
-                            w_percent = round(w_result * 100 / w_target) if w_target else 0
+                            w_result = min(remaining, w_target)
+                            remaining -= w_result
+                            w_percent = pct(w_result, w_target)
                             stats[week] = {"Target": w_target, "Result": w_result, "Percent": w_percent}
                         team_rows[team].append({"Task": task_code, "Weeks": task_weeks(task_code), "Stats": stats})
+
+        # ១.១ Task ដែលមានការងារ Team តែគ្មាន Chat ID ក្នុង 'Team chat IDs' (មិនដែលត្រូវបានផ្ញើ)
+        extra = [c.strip() for c in (os.environ.get("CHECK_UNMAPPED_TASKS") or ",".join(UNMAPPED_TASK_TABS)).split(",") if c.strip()]
+        for code in extra:
+            if code in task_chat_ids:
+                continue
+            df_x = fetch_csv(code)
+            if df_x is None or df_x.empty or "Team" not in df_x.columns or "Site name" not in df_x.columns:
+                continue
+            ok = df_x["Team"].astype(str).str.strip().isin(VALID_TEAMS) & df_x["Site name"].notna() \
+                & ~df_x["Site name"].astype(str).str.strip().str.lower().isin(["", "nan", "none", "#n/a", "n/a"])
+            if ok.sum():
+                unmapped_with_rows.append((code, int(ok.sum())))
+
+        problems = [f"❌ {c}: ផ្ញើបាន {d['sent']} / បរាជ័យ {d['failed']} (Group {d['groups']})"
+                    for c, d in delivery.items() if d["failed"]]
+        problems += [f"⚠️ {c}: ទាញ Sheet មិនបាន" for c, d in delivery.items() if d["fetch_failed"]]
+        problems += [f"⚠️ {c}: មាន {n} ការងារ Team តែគ្មាន Chat ID ក្នុង 'Team chat IDs'" for c, n in unmapped_with_rows]
+        print("===== Delivery summary =====")
+        for c, d in delivery.items():
+            print(f"  {c}: groups={d['groups']} sent={d['sent']} failed={d['failed']} fetch_failed={d['fetch_failed']}")
+        if problems and os.environ.get("SEND_DELIVERY_REPORT", "1") != "0":
+            try:
+                client.send_message(MAIN_GROUP_ID, "📋 របាយការណ៍ផ្ញើ Task ទៅ Group — ចំណុចត្រូវពិនិត្យ\n" + "\n".join(problems), parse_mode=None)
+            except Exception as e:
+                print(f"⚠️ Could not send delivery summary: {e}")
 
         # ២. ផ្ញើតារាងលទ្ធផលសប្តាហ៍ និងរំលឹក (Loop ផ្ញើដាច់ដោយឡែកទៅកាន់គ្រុប Team នីមួយៗ ម្តងមួយធីម)
         for team in VALID_TEAMS:
@@ -537,10 +659,10 @@ def main():
                 continue
 
             # បង្កើតនិងផ្ញើរូបភាពតារាង Weekly Report
-            title = f"Weekly report {team} — Target, Result and % by Site name"
+            title = f"របាយការណ៍ប្រចាំសប្តាហ៍ {team} — គោលដៅ លទ្ធផល និងភាគរយ តាមឈ្មោះ Site"
             image_path = f"team_summary_{team}.png"
             dfi.export(style_detail_table(weekly_team_table(items), title).hide(axis="index"), image_path, max_rows=-1)
-            client.send_file(team_chat_id, image_path, caption=f"{title}")
+            send_with_caption(client, team_chat_id, image_path, f"{title}")
 
             # ពិនិត្យភាគរយសប្តាហ៍បច្ចុប្បន្ន ប្រសិនបើក្រោម 50% ផ្ញើសារ Tag រំលឹក
             target, result, percent = current_week_team_progress(items, current_week)
@@ -548,12 +670,15 @@ def main():
 
             if target and percent < REMINDER_THRESHOLD:
                 reminder_msg = (
-                    f"⚠️ **Weekly Reminder**\n"
-                    f"Dear {mention} ({team} — {TEAM_LEADERS[team]})\n"
-                    f"This week's result: {result}/{target} ({percent}%)\n"
-                    f"🔻 Progress is below {REMINDER_THRESHOLD}%. Please state the reason and corrective action immediately."
+                    f"⚠️ **រំលឹកប្រចាំសប្តាហ៍**\n"
+                    f"Dear bong {mention} ({team} — {TEAM_LEADERS[team]})\n"
+                    f"លទ្ធផលសប្តាហ៍នេះ៖ {result}/{target} ({percent}%)\n"
+                    f"🔻 ភាគរយនៅក្រោម {REMINDER_THRESHOLD}% សូមបងបញ្ជាក់ពីមូលហេតុ និងវិធានការកែលម្អជាបន្ទាន់។"
                 )
-                client.send_message(team_chat_id, reminder_msg)
+                try:
+                    client.send_message(team_chat_id, reminder_msg)
+                except Exception as e:
+                    print(f"⚠️ Reminder to {team} failed: {e}")
 
         # ៣. ពិនិត្យ Warning Letter ធ្លាក់ចុះក្រោម 80% ជាប់គ្នា 3 សប្តាហ៍ ផ្ញើចូល Main Group
         candidates = []
@@ -580,9 +705,9 @@ def main():
 
         if candidates:
             path = make_warning_letter_docx(candidates, cand_prog, today, current_week)
-            client.send_file(MAIN_GROUP_ID, path, caption="⚠️ Warning Letter Draft (Teams remained below 80% for 3 consecutive weeks)")
-            for team in candidates:
-                warning_state[team]["draft_sent"] = True
+            if send_with_caption(client, MAIN_GROUP_ID, path, f"⚠️ សេចក្តីព្រាងលិខិតព្រមាន (ក្រុមដែលនៅក្រោម {WARNING_THRESHOLD}% ជាប់គ្នា 3 សប្តាហ៍)"):
+                for team in candidates:
+                    warning_state[team]["draft_sent"] = True
 
     if is_scheduled:
         warning_state["_last_run"] = today.isoformat()
