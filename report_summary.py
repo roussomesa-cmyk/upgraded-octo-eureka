@@ -329,7 +329,8 @@ def weekly_team_table(items):
         for week in range(1, DEFAULT_WEEKS + 1):
             data = item["Stats"].get(week)
             has = bool(data and data["Target"])   # សប្តាហ៍គ្មាន Site (Target 0) បង្ហាញ "—" មិនមែន 0%
-            row[f"Week {week} Target"] = data["Target"] if has else "—"
+            carry = data.get("Carry", 0) if has else 0
+            row[f"Week {week} Target"] = (f"{data['Target']} (+{carry})" if carry else data["Target"]) if has else "—"
             row[f"Week {week} Result"] = data["Result"] if has else "—"
             row[f"Week {week} %"] = f"{data['Percent']}%" if has else "—"
         rows.append(row)
@@ -359,7 +360,8 @@ def current_week_team_progress(items, week_number):
     return target, result, percent
 
 
-def make_warning_letter_docx(teams, progress, today, week_number):
+def make_warning_letter_docx(teams, progress, today, week_number, reasons=None):
+    reasons = reasons or {}
     doc = Document()
     section = doc.sections[0]
     section.top_margin = Inches(0.55)
@@ -399,7 +401,8 @@ def make_warning_letter_docx(teams, progress, today, week_number):
 
     subject = doc.add_paragraph(
         f"Subject: Draft Warning Letter for Team Leaders whose teams have remained "
-        f"below {WARNING_THRESHOLD}% of the weekly target for 3 consecutive weeks."
+        f"below {WARNING_THRESHOLD}% of the weekly target for 3 consecutive weeks, "
+        f"or have no result at all for the whole week."
     )
     subject.runs[0].bold = True
 
@@ -415,7 +418,7 @@ def make_warning_letter_docx(teams, progress, today, week_number):
         target, result, percent = progress[team]
         values = [
             str(index), team, TEAM_LEADERS[team], "Team Leader",
-            f"Remained below {WARNING_THRESHOLD}% for 3 consecutive weeks (Week {week_number}). Total: {result}/{target} ({percent}%).",
+            reasons.get(team) or f"Remained below {WARNING_THRESHOLD}% for 3 consecutive weeks (Week {week_number}). Total: {result}/{target} ({percent}%).",
             "Proposed: Deduct 1 KI allowance (subject to Director approval)"
         ]
         for cell, value in zip(table.add_row().cells, values):
@@ -615,12 +618,16 @@ def main():
                         # Result បំពេញតាមលំដាប់សប្តាហ៍: Site ដែល Approved បំពេញ Target សប្តាហ៍ទី 1 មុន
                         # ទើបលើសទៅសប្តាហ៍ទី 2, 3... (មិនរាប់តាមទីតាំង Site ក្នុងបញ្ជីអក្សរក្រម)
                         remaining = sum(approved_count(wdf) for wdf in groups.values())
+                        # ការងារសល់ពីសប្តាហ៍ចាស់ (សប្តាហ៍ដែលបានចប់ហើយ) រុញបូកបន្ថែមក្នុង Target សប្តាហ៍បន្ទាប់
+                        shortfall = 0
                         for week, week_df in groups.items():
-                            w_target = len(week_df)
+                            carry = shortfall if (week - 1) < current_week else 0
+                            w_target = len(week_df) + carry
                             w_result = min(remaining, w_target)
                             remaining -= w_result
+                            shortfall = w_target - w_result
                             w_percent = pct(w_result, w_target)
-                            stats[week] = {"Target": w_target, "Result": w_result, "Percent": w_percent}
+                            stats[week] = {"Target": w_target, "Result": w_result, "Percent": w_percent, "Carry": carry}
                         team_rows[team].append({"Task": task_code, "Weeks": task_weeks(task_code), "Stats": stats})
 
         # ១.១ Task ដែលមានការងារ Team តែគ្មាន Chat ID ក្នុង 'Team chat IDs' (មិនដែលត្រូវបានផ្ញើ)
@@ -703,11 +710,29 @@ def main():
                     state["low_weeks"] = 0
                     state["draft_sent"] = False
 
-        if candidates:
-            path = make_warning_letter_docx(candidates, cand_prog, today, current_week)
-            if send_with_caption(client, MAIN_GROUP_ID, path, f"⚠️ សេចក្តីព្រាងលិខិតព្រមាន (ក្រុមដែលនៅក្រោម {WARNING_THRESHOLD}% ជាប់គ្នា 3 សប្តាហ៍)"):
+        # ៣.១ ទាំងសប្តាហ៍គ្មានលទ្ធផលសោះ (0%) → ចេញលិខិតព្រមានមេធីមភ្លាម (ពិនិត្យចាប់ពីថ្ងៃសុក្រ ម្តងក្នុងមួយសប្តាហ៍)
+        reasons = {}
+        zero_teams = []
+        for team in VALID_TEAMS:
+            items = team_rows.get(team, [])
+            target, result, percent = current_week_team_progress(items, current_week)
+            state = warning_state.setdefault(team, {"low_weeks": 0, "last_counted_week": 0, "draft_sent": False})
+            if target and result == 0 and today.weekday() >= 4 and state.get("zero_sent_week") != abs_week:
+                zero_teams.append(team)
+                reasons[team] = f"No result at all for the whole of Week {current_week} (0/{target}, 0%)."
+                cand_prog[team] = (target, result, percent)
+
+        letter_teams = list(dict.fromkeys(candidates + zero_teams))
+        if letter_teams:
+            for t in candidates:
+                reasons.setdefault(t, None)
+            path = make_warning_letter_docx(letter_teams, cand_prog, today, current_week, reasons)
+            if send_with_caption(client, MAIN_GROUP_ID, path,
+                                 f"⚠️ សេចក្តីព្រាងលិខិតព្រមាន (ក្រុមក្រោម {WARNING_THRESHOLD}% ជាប់គ្នា 3 សប្តាហ៍ ឬគ្មានលទ្ធផលទាំងសប្តាហ៍)"):
                 for team in candidates:
                     warning_state[team]["draft_sent"] = True
+                for team in zero_teams:
+                    warning_state[team]["zero_sent_week"] = abs_week
 
     if is_scheduled:
         warning_state["_last_run"] = today.isoformat()
