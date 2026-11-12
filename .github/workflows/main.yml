@@ -4,14 +4,17 @@ on:
   schedule:
     # GitHub (free) ចាប់ផ្តើមយឺតមិនទៀង → ចាប់ផ្តើមមុនម៉ោង ហើយស្គ្រីបរង់ចាំដល់ SEND_AT មុនផ្ញើ
     # ជៀសវាងនាទី :00 / :30 ព្រោះមនុស្សច្រើនប្រើ ទើបយឺតជាង
-    - cron: '43 23 * * *'   # 06:43 ម៉ោងកម្ពុជា (មេ)
-    - cron: '13 0 * * *'    # 07:13 ម៉ោងកម្ពុជា (បម្រុង ប្រសិនបើមេមិនដំណើរការ)
+    - cron: '35 0 * * *'    # 07:35 ម៉ោងកម្ពុជា (បម្រុង បើ cron-job.org មិនដំណើរការ; ស្គ្រីបរង់ចាំដល់ 08:00)
   workflow_dispatch:
     inputs:
       source:
         description: 'cron = ហៅស្វ័យប្រវត្តិពី cron ខាងក្រៅ / manual = ដោយដៃ'
         required: false
         default: 'manual'
+      send_at:
+        description: 'សាកល្បងម៉ោងផ្ញើ (HH:MM ម៉ោងកម្ពុជា) ទុកទទេ = 08:00'
+        required: false
+        default: ''
 
 # កុំឱ្យ ២ ដំណើរការរត់ព្រមគ្នា (បម្រុងនឹងរង់ចាំមេចប់ ហើយរំលងដោយខ្លួនឯង)
 concurrency:
@@ -65,7 +68,7 @@ jobs:
           SPREADSHEET_ID: ${{ secrets.REPORT_SPREADSHEET_ID }}
           NOTIFY_GROUP_ID: ${{ secrets.REPORT_NOTIFY_GROUP_ID }}
           RUN_SOURCE: ${{ github.event.inputs.source }}
-          SEND_AT: '07:30'   # ម៉ោងផ្ញើ (ម៉ោងកម្ពុជា) — សម្រាប់ដំណើរការតាម schedule ប៉ុណ្ណោះ
+          SEND_AT: ${{ github.event.inputs.send_at || '08:00' }}   # ម៉ោងផ្ញើ (ម៉ោងកម្ពុជា) — សម្រាប់ដំណើរការតាម schedule ប៉ុណ្ណោះ
           # START_DATE ត្រូវលុបចេញ: ស្គ្រីបគណនាសប្តាហ៍ស្វ័យប្រវត្តិ
         run: python report_summary.py
 
