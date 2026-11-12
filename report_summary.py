@@ -521,7 +521,7 @@ def main():
     print(f"ℹ️ Run started {now:%Y-%m-%d %H:%M:%S} (Cambodia) | event={os.environ.get('GITHUB_EVENT_NAME')} "
           f"| source={os.environ.get('RUN_SOURCE') or '-'}")
     # Cron បម្រុង: បើថ្ងៃនេះផ្ញើរួចហើយ ឱ្យរំលង (កុំផ្ញើស្ទួន)
-    if is_scheduled and warning_state.get("_last_run") == today.isoformat():
+    if is_scheduled and warning_state.get("_last_run") == today.isoformat() and os.environ.get("FORCE_RESEND") != "1":
         print(f"ℹ️ Already sent today ({today}) — skipping duplicate scheduled run")
         return
     # ដំណើរការមុនម៉ោង រួចរង់ចាំដល់ SEND_AT (ឧ. 08:00)។ ដំណើរការដោយដៃ (workflow_dispatch) មិនរង់ចាំទេ។
