@@ -583,8 +583,8 @@ def main():
                 if "Site name" in df_detail.columns:
                     df_detail = df_detail[df_detail["Site name"].notna() & (~df_detail["Site name"].astype(str).str.strip().str.lower().isin(["", "nan", "none", "#n/a", "n/a"]))]
 
-                # យកការងារទាំងអស់ លើកលែងាតែពាក្យ Approved
-                if "Result" in df_detail.columns:
+                # Run ស្វ័យប្រវត្តិ (ព្រឹក) = យកតែការងារមិនទាន់ Approved; Run ដោយដៃ = យកទិន្នន័យទាំងអស់ (រួមទាំង Approved)
+                if is_scheduled and "Result" in df_detail.columns:
                     df_detail = df_detail[df_detail["Result"].astype(str).str.strip().str.lower() != "approved"]
 
                 df_detail = df_detail.fillna("").replace(to_replace=r"^(?i:nan|none|#n/a|n/a)$", value="", regex=True)
@@ -598,7 +598,8 @@ def main():
                         dfi.export(styled_detail.hide(axis="index"), img_path, max_rows=-1)
 
                         pending_text = build_pending_list_text(df_single_team, team, task_title, show_serial=(str(task_code).strip().upper() == "A2"))
-                        full_caption = f"ការងារក្រុមមិនទាន់ធ្វើ {team} ({task_title}) - {shift_name}"
+                        full_caption = (f"ការងារក្រុមមិនទាន់ធ្វើ {team} ({task_title}) - {shift_name}" if is_scheduled
+                                        else f"ទិន្នន័យការងារទាំងអស់ {team} ({task_title}){(' - ' + shift_name) if shift_name else ''}")
                         if pending_text:
                             full_caption += f"\n\n{pending_text}"
 
