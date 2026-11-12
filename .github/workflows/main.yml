@@ -11,6 +11,10 @@ on:
         description: 'cron = ហៅស្វ័យប្រវត្តិពី cron ខាងក្រៅ / manual = ដោយដៃ'
         required: false
         default: 'manual'
+      force_resend:
+        description: 'សាកល្បងប៉ុណ្ណោះ: វាយ 1 = ផ្ញើម្តងទៀត ទោះថ្ងៃនេះបានផ្ញើរួចហើយ'
+        required: false
+        default: ''
       send_at:
         description: 'សាកល្បងម៉ោងផ្ញើ (HH:MM ម៉ោងកម្ពុជា) ទុកទទេ = 08:00'
         required: false
@@ -67,6 +71,7 @@ jobs:
           TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
           SPREADSHEET_ID: ${{ secrets.REPORT_SPREADSHEET_ID }}
           NOTIFY_GROUP_ID: ${{ secrets.REPORT_NOTIFY_GROUP_ID }}
+          FORCE_RESEND: ${{ github.event.inputs.force_resend }}
           RUN_SOURCE: ${{ github.event.inputs.source }}
           SEND_AT: ${{ github.event.inputs.send_at || '08:00' }}   # ម៉ោងផ្ញើ (ម៉ោងកម្ពុជា) — សម្រាប់ដំណើរការតាម schedule ប៉ុណ្ណោះ
           # START_DATE ត្រូវលុបចេញ: ស្គ្រីបគណនាសប្តាហ៍ស្វ័យប្រវត្តិ
