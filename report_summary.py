@@ -215,8 +215,14 @@ def style_detail_table(df, title):
 def style_pending_table(df, title):
     """តារាងការងារមិនទាន់ធ្វើ: ជួរពណ៌ខៀវស្រាលតាមគំរូ"""
     styler = style_detail_table(df, title)
-    return styler.set_table_styles(
+    styler = styler.set_table_styles(
         [{"selector": "td", "props": [("background-color", "#BDD7EE"), ("white-space", "nowrap")]}], overwrite=False)
+    # Remark / Last date record វែង → កាត់ជួរចុះបន្ទាត់ កុំឱ្យរូបទទឹងពេក (Telegram បង្រួមអក្សរតូច)
+    long_cols = [c for c in df.columns if str(c).strip() in ("Remark", "Last date record")]
+    if long_cols:
+        styler = styler.set_properties(subset=long_cols, **{
+            "white-space": "normal !important", "word-break": "break-word", "max-width": "260px", "min-width": "120px"})
+    return styler
 
 
 def style_task_summary(df, title):
@@ -329,8 +335,7 @@ def weekly_team_table(items):
         for week in range(1, DEFAULT_WEEKS + 1):
             data = item["Stats"].get(week)
             has = bool(data and data["Target"])   # សប្តាហ៍គ្មាន Site (Target 0) បង្ហាញ "—" មិនមែន 0%
-            carry = data.get("Carry", 0) if has else 0
-            row[f"Week {week} Target"] = (f"{data['Target']} (+{carry})" if carry else data["Target"]) if has else "—"
+            row[f"Week {week} Target"] = data["Target"] if has else "—"   # Target រួមបញ្ចូលការងាររុញពីសប្តាហ៍មុនរួចហើយ
             row[f"Week {week} Result"] = data["Result"] if has else "—"
             row[f"Week {week} %"] = f"{data['Percent']}%" if has else "—"
         rows.append(row)
@@ -519,7 +524,7 @@ def main():
     if is_scheduled and warning_state.get("_last_run") == today.isoformat():
         print(f"ℹ️ Already sent today ({today}) — skipping duplicate scheduled run")
         return
-    # ដំណើរការមុនម៉ោង រួចរង់ចាំដល់ SEND_AT (ឧ. 07:30)។ ដំណើរការដោយដៃ (workflow_dispatch) មិនរង់ចាំទេ។
+    # ដំណើរការមុនម៉ោង រួចរង់ចាំដល់ SEND_AT (ឧ. 08:00)។ ដំណើរការដោយដៃ (workflow_dispatch) មិនរង់ចាំទេ។
     send_at = (os.environ.get("SEND_AT") or "").strip()
     if is_scheduled and send_at:
         hh, mm = (int(x) for x in send_at.split(":"))
