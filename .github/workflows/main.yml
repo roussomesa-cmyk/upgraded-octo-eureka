@@ -4,21 +4,13 @@ on:
   schedule:
     # GitHub (free) ចាប់ផ្តើមយឺតមិនទៀង → ចាប់ផ្តើមមុនម៉ោង ហើយស្គ្រីបរង់ចាំដល់ SEND_AT មុនផ្ញើ
     # ជៀសវាងនាទី :00 / :30 ព្រោះមនុស្សច្រើនប្រើ ទើបយឺតជាង
-    - cron: '35 0 * * *'    # 07:35 ម៉ោងកម្ពុជា (បម្រុង បើ cron-job.org មិនដំណើរការ; ស្គ្រីបរង់ចាំដល់ 08:00)
-  workflow_dispatch:
-    inputs:
-      source:
-        description: 'cron = ហៅស្វ័យប្រវត្តិពី cron ខាងក្រៅ / manual = ដោយដៃ'
-        required: false
-        default: 'manual'
-      force_resend:
-        description: 'សាកល្បងប៉ុណ្ណោះ: វាយ 1 = ផ្ញើម្តងទៀត ទោះថ្ងៃនេះបានផ្ញើរួចហើយ'
-        required: false
-        default: ''
-      send_at:
-        description: 'សាកល្បងម៉ោងផ្ញើ (HH:MM ម៉ោងកម្ពុជា) ទុកទទេ = 08:00'
-        required: false
-        default: ''
+    # ដាក់ច្រើនដង ដើម្បីបើ GitHub យឺត យ៉ាងហោចណាស់មួយចាប់ផ្ដើមមុន 08:00 (ស្គ្រីបមិនផ្ញើស្ទួនទេ)
+    - cron: '37 23 * * *'   # 06:37 ម៉ោងកម្ពុជា
+    - cron: '7 0 * * *'     # 07:07
+    - cron: '37 0 * * *'    # 07:37
+  repository_dispatch:   # ហៅពី Google Apps Script ត្រង់ម៉ោង 7:45 (ចាត់ជា Run ស្វ័យប្រវត្តិ)
+    types: [daily-report]
+  workflow_dispatch:   # ចុច Run workflow ដោយដៃ = ផ្ញើទិន្នន័យទាំងអស់ភ្លាមៗ
 
 # កុំឱ្យ ២ ដំណើរការរត់ព្រមគ្នា (បម្រុងនឹងរង់ចាំមេចប់ ហើយរំលងដោយខ្លួនឯង)
 concurrency:
@@ -71,9 +63,7 @@ jobs:
           TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
           SPREADSHEET_ID: ${{ secrets.REPORT_SPREADSHEET_ID }}
           NOTIFY_GROUP_ID: ${{ secrets.REPORT_NOTIFY_GROUP_ID }}
-          FORCE_RESEND: ${{ github.event.inputs.force_resend }}
-          RUN_SOURCE: ${{ github.event.inputs.source }}
-          SEND_AT: ${{ github.event.inputs.send_at || '08:00' }}   # ម៉ោងផ្ញើ (ម៉ោងកម្ពុជា) — សម្រាប់ដំណើរការតាម schedule ប៉ុណ្ណោះ
+          SEND_AT: '08:00'   # ម៉ោងផ្ញើ (ម៉ោងកម្ពុជា) — សម្រាប់ដំណើរការតាម schedule ប៉ុណ្ណោះ
           # START_DATE ត្រូវលុបចេញ: ស្គ្រីបគណនាសប្តាហ៍ស្វ័យប្រវត្តិ
         run: python report_summary.py
 
