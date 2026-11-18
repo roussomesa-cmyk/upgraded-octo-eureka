@@ -516,7 +516,7 @@ def main():
 
     # ===== ផ្ញើតាមម៉ោងថេរ (GitHub Actions free ចាប់ផ្តើមយឺតមិនទៀង) =====
     # ស្វ័យប្រវត្តិ = schedule របស់ GitHub ឬ ហៅពី cron ខាងក្រៅ (RUN_SOURCE=cron)។ ដំណើរការដោយដៃ = មិនមែនទាំងពីរ។
-    is_scheduled = (os.environ.get("GITHUB_EVENT_NAME") == "schedule"
+    is_scheduled = (os.environ.get("GITHUB_EVENT_NAME") in ("schedule", "repository_dispatch")
                     or os.environ.get("RUN_SOURCE") == "cron")
     print(f"ℹ️ Run started {now:%Y-%m-%d %H:%M:%S} (Cambodia) | event={os.environ.get('GITHUB_EVENT_NAME')} "
           f"| source={os.environ.get('RUN_SOURCE') or '-'}")
@@ -593,7 +593,7 @@ def main():
                 for team in VALID_TEAMS:
                     df_single_team = df_detail[df_detail["Team"] == team].copy()
                     if not df_single_team.empty:
-                        styled_detail = style_pending_table(df_single_team, f"{task_title} ({team})")
+                        styled_detail = style_pending_table(df_single_team, f"{task_title} ({team})" + ("" if is_scheduled else " — All data"))
                         img_path = f"detail_{task_code}_{team}.png"
                         dfi.export(styled_detail.hide(axis="index"), img_path, max_rows=-1)
 
