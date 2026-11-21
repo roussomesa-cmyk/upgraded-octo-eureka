@@ -8,8 +8,8 @@ on:
     - cron: '37 23 * * *'   # 06:37 ម៉ោងកម្ពុជា
     - cron: '7 0 * * *'     # 07:07
     - cron: '37 0 * * *'    # 07:37
-  repository_dispatch:   # ហៅពី Google Apps Script ត្រង់ម៉ោង 7:45 (ចាត់ជា Run ស្វ័យប្រវត្តិ)
-    types: [daily-report]
+  repository_dispatch:   # ហៅពី Google Apps Script (ចាត់ជា Run ស្វ័យប្រវត្តិ)
+    types: [daily-report, daily-report-evening, daily-report-hourly]   # ព្រឹក / ល្ងាច / រៀងរាល់ម៉ោង
   workflow_dispatch:   # ចុច Run workflow ដោយដៃ = ផ្ញើទិន្នន័យទាំងអស់ភ្លាមៗ
 
 # កុំឱ្យ ២ ដំណើរការរត់ព្រមគ្នា (បម្រុងនឹងរង់ចាំមេចប់ ហើយរំលងដោយខ្លួនឯង)
@@ -63,6 +63,7 @@ jobs:
           TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
           SPREADSHEET_ID: ${{ secrets.REPORT_SPREADSHEET_ID }}
           NOTIFY_GROUP_ID: ${{ secrets.REPORT_NOTIFY_GROUP_ID }}
+          EVENT_ACTION: ${{ github.event.action }}
           SEND_AT: '08:00'   # ម៉ោងផ្ញើ (ម៉ោងកម្ពុជា) — សម្រាប់ដំណើរការតាម schedule ប៉ុណ្ណោះ
           # START_DATE ត្រូវលុបចេញ: ស្គ្រីបគណនាសប្តាហ៍ស្វ័យប្រវត្តិ
         run: python report_summary.py
