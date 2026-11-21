@@ -100,8 +100,8 @@ def normalize_team(name):
 _RAW_CSV = {}  # cache អត្ថបទ CSV ដើម្បីកុំទាញ Sheet ធំ (A2 មាន ~50,000 ជួរ) ពីរដង
 
 
-def fetch_csv(sheet_name_or_gid):
-    url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name_or_gid}"
+def fetch_csv(sheet_name_or_gid, spreadsheet_id=None):
+    url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id or SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name_or_gid}"
     headers = {"User-Agent": "Mozilla/5.0"}
     res = None
     # Sheet ធំ (A2 ~50,000 ជួរ) ត្រូវការពេលលើស 15 វិនាទី → timeout វែង + ព្យាយាមម្តងទៀត
@@ -119,7 +119,8 @@ def fetch_csv(sheet_name_or_gid):
         return None
     if res.status_code == 200:
         res.encoding = "utf-8"
-        _RAW_CSV[str(sheet_name_or_gid)] = res.text
+        if not spreadsheet_id:
+            _RAW_CSV[str(sheet_name_or_gid)] = res.text
 
     if res.status_code == 200:
         lines = res.text.splitlines()
@@ -365,8 +366,83 @@ def current_week_team_progress(items, week_number):
     return target, result, percent
 
 
+WARNING_TEMPLATE = os.environ.get("WARNING_TEMPLATE", "warning_template.docx")
+
+
+def _set_par(par, text):
+    """ប្តូរអត្ថបទប្រយោគ ដោយរក្សាទម្រង់ (font/bold) របស់ run ទី 1 (ឬ run ដែលមិនមែន bold-label)"""
+    runs = par.runs
+    if not runs:
+        par.add_run(text)
+        return
+    keep = runs[-1] if len(runs) > 1 and runs[0].bold and not runs[-1].bold else runs[0]
+    keep.text = text
+    for r in runs:
+        if r is not keep:
+            r.text = ""
+
+
+def make_warning_letter_from_template(teams, progress, today, week_number, reasons, monthly=None):
+    """monthly = ឈ្មោះខែ (ឧ. 'November 2026') → លិខិតប្រចាំខែ (ការងារមិនចប់ក្នុងខែ រុញទៅខែក្រោយ)"""
+    from copy import deepcopy
+    doc = Document(WARNING_TEMPLATE)
+    names = ", ".join(teams)
+    for par in doc.paragraphs:
+        t = par.text
+        if t.startswith("Subject:"):
+            _set_par(par, (f"Subject: Warning letter for Team Leaders not finishing work within the month and carrying work over to the next month ({monthly})."
+                           if monthly else
+                           f"Subject: Warning letter for Team Leaders whose teams remained below {WARNING_THRESHOLD}% of the weekly target "
+                           f"for 3 consecutive weeks, or had no result at all for the whole week (Week {week_number})."))
+            par.runs[0].bold = True
+        elif t.startswith("Based on the failure"):
+            _set_par(par, (f"Based on the failure to finish work within the month and leaving work to carry over to the next month ({monthly})."
+                           if monthly else f"Based on the weekly target progress of Week {week_number} ({today.strftime('%d/%m/%Y')})."))
+        elif t.startswith("Kom Pong Cham Branch would like to issue"):
+            _set_par(par, f"Kom Pong Cham Branch would like to issue a warning to the Team Leaders of: {names}.")
+        elif t.startswith("1. Details of the warning"):
+            _set_par(par, ("1. Details of the warning to Team Leaders who did not finish work within the month and carried work over."
+                           if monthly else "1. Details of the warning to Team Leaders whose teams did not reach the weekly target."))
+        elif t.startswith("Remind Team Leaders"):
+            _set_par(par, f"Remind Team Leaders {names} for the first time, based on the root causes detailed above.")
+    table = next(t for t in doc.tables if len(t.columns) == 6)
+    proto = deepcopy(table.rows[1]._tr)
+    for row in list(table.rows)[1:]:
+        table._tbl.remove(row._tr)
+    for i, team in enumerate(teams, start=1):
+        target, result, percent = progress[team]
+        table._tbl.append(deepcopy(proto))
+        cells = table.rows[-1].cells
+        reason = reasons.get(team) or (f"Remained below {WARNING_THRESHOLD}% for 3 consecutive weeks (Week {week_number}). "
+                                       f"Total: {result}/{target} ({percent}%).")
+        for cell, val in zip(cells, [str(i), team, TEAM_LEADERS[team], "Team Leader", reason, "Deduct 1KI"]):
+            _set_par(cell.paragraphs[0], val)
+    filename = (f"warning_letter_monthly_{today:%Y-%m}.docx" if monthly
+                else f"warning_letter_draft_week_{week_number}_{today.isoformat()}.docx")
+    doc.save(filename)
+    return filename
+
+
+def make_monthly_letter(team_left, today):
+    """team_left = {team: {task: ចំនួន Site មិនទាន់ Approved}} → លិខិតប្រចាំខែ (ទម្រង់ដូចលិខិតខែតុលា)"""
+    teams = [t for t in VALID_TEAMS if team_left.get(t)]
+    reasons = {}
+    for t in teams:
+        tasks = ", ".join(f"{k} ({v} site{'s' if v > 1 else ''})" for k, v in sorted(team_left[t].items()))
+        reasons[t] = f"Did not finish the work by the deadline, and left work {tasks} to carry over to the next month."
+    month_label = today.strftime("%B %Y")
+    if not os.path.exists(WARNING_TEMPLATE):
+        return None
+    return make_warning_letter_from_template(teams, {t: (0, 0, 0) for t in teams}, today, 0, reasons, monthly=month_label)
+
+
 def make_warning_letter_docx(teams, progress, today, week_number, reasons=None):
     reasons = reasons or {}
+    if os.path.exists(WARNING_TEMPLATE):
+        try:
+            return make_warning_letter_from_template(teams, progress, today, week_number, reasons)
+        except Exception as e:
+            print(f"⚠️ Template letter failed ({e}) — using plain layout")
     doc = Document()
     section = doc.sections[0]
     section.top_margin = Inches(0.55)
@@ -458,6 +534,284 @@ def send_with_caption(client, chat_id, path, caption):
         return False
 
 
+# ===== ម៉ោងម្តង: រកការងារ Not Approved → រកមូលហេតុ → បើគ្មាន Tag អ្នកកាន់ការងារសួរ → ផ្ញើចូលគ្រុប Team =====
+# Telegram username របស់ staff (ឈ្មោះក្នុងជួរ "Name staff" → @username)។ បើគ្មាន សរសេរតែឈ្មោះ (Tag មិនបាន)។
+STAFF_TELEGRAM = {
+    "Oum Sopheaktra": "@sopheaktraoum",
+    "Bou Soeu": "+855977689987",          # លេខទូរស័ព្ទ (គ្មាន @username)
+    "Trol Kea": "@TROL_KEA",
+    "Nhoeuk Pech": "@Nhoeuk_Pech",
+    "Ing Sokkhemarak": "@khemarak9",
+    "Chit Kanas": "@Kanasc1",
+    # "Vo Hong Lam": "@username", "Oeun Samart": "@username", "Teth": "@username",
+}
+HOURLY_FROM, HOURLY_TO = 8, 17      # ម៉ោងកម្ពុជា (រួមទាំងម៉ោង 17)
+# Sheet មេ (Master report power) មានមូលហេតុក្នុងជួរ Remark — ត្រូវចែករំលែក "Anyone with the link: Viewer"
+# ម្ចាស់ Sheet មេមិនឱ្យចែករំលែក → ចម្លងទិន្នន័យចូល Sheet Report Power ខ្លួនឯងតាម IMPORTRANGE (អានតែមួយទិសដៅ មិនប៉ះពាល់ Sheet មេ)
+#   Tab "MasterSUM" = IMPORTRANGE(Sheet មេ, "SUM!A1:N80") → ឈ្មោះអ្នកកាន់ការងារ
+#   Tab "M_B3", "M_A1" ... (ជាជម្រើស) = IMPORTRANGE(Sheet មេ, "B3!A1:Z2000") → ជួរ Remark មូលហេតុ។ ដាក់ឈ្មោះ Task ក្នុង MASTER_REASON_TABS
+MASTER_SPREADSHEET_ID = os.environ.get("MASTER_SPREADSHEET_ID") or SPREADSHEET_ID
+MASTER_SUM_TAB = os.environ.get("MASTER_SUM_TAB") or ("SUM" if MASTER_SPREADSHEET_ID != SPREADSHEET_ID else "MasterSUM")
+MASTER_REASON_TABS = [t.strip().upper() for t in (os.environ.get("MASTER_REASON_TABS") or "").split(",") if t.strip()]
+REASON_COLUMNS = ["Remark", "Remark ELE", "History Task"]
+# អ្នកកាន់ការងារដែលហៅ "អូន" (ក្រៅពីនេះហៅ "បង")។ ឧ. {"Teth"}
+CALL_AS_ADIK = {"Trol Kea", "Ing Sokkhemarak", "Oum Sopheaktra"}
+JUNK_REASONS = {"-", ",", "0", "#n/a", "new target", "ok"}
+_EMPTY = ("", "nan", "none", "#n/a", "n/a")
+
+
+def _clean(v):
+    v = str(v).strip()
+    return "" if v.lower() in _EMPTY else v
+
+
+def staff_tag(name):
+    name = _clean(name)
+    if not name:
+        return "(មិនមានឈ្មោះអ្នកកាន់ការងារ)"
+    try:
+        extra = json.loads(os.environ.get("STAFF_TELEGRAM_JSON") or "{}")
+    except json.JSONDecodeError:
+        extra = {}
+    handles = {k.strip().casefold(): v for k, v in {**STAFF_TELEGRAM, **extra}.items()}
+    handle = handles.get(name.casefold())
+    return f"{handle} ({name})" if handle else name
+
+
+def _reason_from(row, cols):
+    for col in cols:
+        v = _clean(row.get(col, "")) if col in row.index else ""
+        if v and v.lower() not in JUNK_REASONS:
+            return v
+    return ""
+
+
+TASK_HOLDERS_DEFAULT = {'A1': 'Oum Sopheaktra', 'A2': 'Bou Soeu', 'A3': 'Bou Soeu', 'A4': 'Chit Kanas', 'A5': 'Trol Kea', 'A6': 'Trol Kea', 'A7': 'Chit Kanas', 'A8': 'Oum Sopheaktra', 'B1': 'Oum Sopheaktra', 'B2': 'Oum Sopheaktra', 'B3': 'Bou Soeu', 'B4': 'Trol Kea', 'B5': 'Trol Kea', 'B6': 'Trol Kea', 'B7': 'Nhoeuk Pech', 'B8': 'Oum Sopheaktra', 'B9': 'Trol Kea', 'B10': 'Ing Sokkhemarak', 'B11': 'Bou Soeu', 'B12': 'Nhoeuk Pech', 'B13': 'Oum Sopheaktra', 'B14': 'Nhoeuk Pech', 'B15': 'Nhoeuk Pech', 'B16': 'Chit Kanas', 'B17': 'Trol Kea', 'B18': 'Nhoeuk Pech', 'C1': 'Vo Hong Lam', 'C2': 'Trol Kea', 'C3': 'Trol Kea', 'C4': 'Nhoeuk Pech', 'C5': 'Vo Hong Lam', 'C6': 'Vo Hong Lam', 'C7': 'Vo Hong Lam', 'C8': 'Vo Hong Lam', 'C9': 'Nhoeuk Pech', 'C10': 'Oum Sopheaktra', 'C11': 'Vo Hong Lam', 'W1': 'Oeun Samart', 'W2': 'Chit Kanas', 'W3': 'Chit Kanas', 'W4': 'Nhoeuk Pech', 'E1': 'Oum Sopheaktra', 'E2': 'Bou Soeu', 'E3': 'Teth', 'E4': 'Bou Soeu', 'E5': 'Trol Kea', 'E16': 'Teth'}   # ពី Sheet មេ Tab SUM ជួរ J (ប្រើបើគ្មាន Tab MasterSUM)
+
+
+def task_holders():
+    """{Task → ឈ្មោះអ្នកកាន់ការងារ} ពី Sheet មេ Tab SUM (ជួរ "Annex sheet" និង "Staff 1")"""
+    df = fetch_csv(MASTER_SUM_TAB, MASTER_SPREADSHEET_ID if MASTER_SPREADSHEET_ID != SPREADSHEET_ID else None)
+    out = dict(TASK_HOLDERS_DEFAULT)
+    if df is None or df.empty:
+        return out
+    annex = next((c for c in df.columns if str(c).strip().lower().startswith("annex")), None)
+    staff = next((c for c in df.columns if str(c).strip().lower().startswith("staff 1")), None)
+    if not annex or not staff:
+        print(f"⚠️ SUM: រកជួរ Annex sheet / Staff 1 មិនឃើញ ({list(df.columns)[:12]})")
+        return out
+    for _, r in df.iterrows():
+        code, name = _clean(r[annex]).upper(), _clean(r[staff])
+        if code and name:
+            out[code] = name
+    return out
+
+
+def master_reasons(code):
+    """{(site, serial) / site → មូលហេតុ} ពី Tab ដូចគ្នាក្នុង Sheet មេ"""
+    out = {}
+    if MASTER_SPREADSHEET_ID == SPREADSHEET_ID:       # Sheet មេចម្លងចូល Sheet ខ្លួនឯង → Tab M_<Task> (បើបានបង្កើត)
+        if str(code).strip().upper() not in MASTER_REASON_TABS:
+            return out
+        df = fetch_csv(f"M_{code}")
+    else:
+        df = fetch_csv(code, MASTER_SPREADSHEET_ID)
+    if df is None or df.empty or "Site name" not in df.columns:
+        return out
+    for _, r in df.iterrows():
+        site = _clean(r.get("Site name", "")).casefold()
+        reason = _reason_from(r, REASON_COLUMNS)
+        if not site or not reason:
+            continue
+        serial = _clean(r.get("Q'ty task/Local task", "")).casefold()
+        out.setdefault((site, serial), reason)
+        out.setdefault(site, reason)
+    return out
+
+
+def collect_not_approved(task_codes):
+    holders = task_holders()
+    """ត្រឡប់ {team: [ {task, site, staff, reason} ]} សម្រាប់ជួរ Result ≠ Approved"""
+    out = {t: [] for t in VALID_TEAMS}
+    for code in task_codes:
+        df = fetch_csv(code)
+        if df is None or df.empty or "Team" not in df.columns or "Site name" not in df.columns:
+            continue
+        df["Team"] = df["Team"].astype(str).str.strip()
+        df = df[df["Team"].isin(VALID_TEAMS)]
+        if "Result" in df.columns:
+            df = df[df["Result"].astype(str).str.strip().str.lower() != "approved"]
+        mreasons = master_reasons(code)
+        holder = holders.get(str(code).strip().upper(), "")
+        for _, r in df.iterrows():
+            site = _clean(r.get("Site name", ""))
+            if not site:
+                continue
+            serial = _clean(r.get("Q'ty task/Local task", "")).casefold()
+            reason = (mreasons.get((site.casefold(), serial)) or mreasons.get(site.casefold())
+                      or _reason_from(r, REASON_COLUMNS))     # ១) Sheet មេ ២) Sheet Report ខ្លួនឯង
+            out[r["Team"]].append({"task": code, "site": site,
+                                   "staff": holder,
+                                   "reason": reason})
+    return out
+
+
+# ---------- ជំហានទី ១ និង ២ = collect_not_approved() (រក Site Not Approved + រកមូលហេតុក្នុង Sheet មេ) ----------
+
+def _call(holder):
+    return "អូន" if _clean(holder).casefold() in {x.casefold() for x in CALL_AS_ADIK} else "បង"
+
+
+# ---------- ជំហានទី ៣: គ្មានមូលហេតុ → សួរអ្នកកាន់ការងារ (ម្តងក្នុងមួយ Site ក្នុងមួយថ្ងៃ) ----------
+def build_question_message(team, rows, asked_today):
+    """ត្រឡប់ (text ឬ None, keys ថ្មីដែលបានសួរ)"""
+    by_holder, keys = {}, []
+    for r in rows:
+        if r["reason"]:
+            continue
+        key = f"{team}|{r['task']}|{r['site']}"
+        if key in asked_today:
+            continue
+        by_holder.setdefault(_clean(r["staff"]), []).append(r)
+        keys.append(key)
+    if not by_holder:
+        return None, []
+    blocks = []
+    for holder, rs in by_holder.items():
+        lines = [f"សួស្តី{_call(holder)} {staff_tag(holder)}"]
+        lines += [f"ការងារ {x['task']} site {x['site']} មានមូលហេតុអី ឬខុសអី បានមិន Approved?" for x in rs]
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks), keys
+
+
+# ---------- ជំហានទី ៤: បានមូលហេតុហើយ → ផ្ញើចូលក្រុម (Tag អ្នកកាន់ការងារ + Site + មូលហេតុ) ----------
+def build_reason_message(team, rows, reported):
+    """ត្រឡប់ (text ឬ None, {key: reason} ថ្មី/ប្តូរ)។ ផ្ញើតែមូលហេតុថ្មី ឬដែលបានប្តូរ។"""
+    groups, fresh = {}, {}
+    for r in rows:
+        if not r["reason"]:
+            continue
+        key = f"{team}|{r['task']}|{r['site']}"
+        if reported.get(key) == r["reason"]:
+            continue
+        groups.setdefault((_clean(r["staff"]), r["reason"]), []).append(r)
+        fresh[key] = r["reason"]
+    if not groups:
+        return None, {}
+    blocks = []
+    for (holder, reason), rs in groups.items():
+        lines = [staff_tag(holder)] + [f"• {x['task']} {x['site']}" for x in rs] + [reason[:300]]
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks), fresh
+
+
+def _send_long(client, chat, text):
+    chunk = ""
+    for line in text.split("\n"):
+        if len(chunk) + len(line) + 1 > 3500:
+            client.send_message(chat, chunk, parse_mode=None)
+            chunk = ""
+        chunk += line + "\n"
+    if chunk.strip():
+        client.send_message(chat, chunk, parse_mode=None)
+
+
+def staff_handle(name):
+    """@username របស់អ្នកកាន់ការងារ (ឬ None)"""
+    try:
+        extra = json.loads(os.environ.get("STAFF_TELEGRAM_JSON") or "{}")
+    except json.JSONDecodeError:
+        extra = {}
+    handles = {k.strip().casefold(): v for k, v in {**STAFF_TELEGRAM, **extra}.items()}
+    return handles.get(_clean(name).casefold())
+
+
+def resolve_dm_target(client, handle):
+    """@username ប្រើបានភ្លាម; លេខទូរស័ព្ទ (+855…) ត្រូវនាំចូលជា Contact ជាមុនទើបផ្ញើបាន"""
+    if not str(handle).startswith("+"):
+        return handle
+    from telethon.tl.functions.contacts import ImportContactsRequest
+    from telethon.tl.types import InputPhoneContact
+    res = client(ImportContactsRequest([InputPhoneContact(client_id=0, phone=handle, first_name="Staff", last_name=handle[-4:])]))
+    if not res.users:
+        raise RuntimeError(f"លេខ {handle} មិនមានគណនី Telegram ឬបិទការស្វែងរក")
+    return res.users[0]
+
+
+def run_hourly(client, task_chat_ids, team_chat_mapping, warning_state, today, now):
+    day = today.isoformat()
+    asked = warning_state.get("_asked", {})
+    if asked.get("date") != day:
+        asked = {"date": day, "keys": []}
+    asked_today = set(asked["keys"])
+    rep = warning_state.get("_reported", {})
+    if rep.get("date") != day:
+        rep = {"date": day, "items": {}}          # រាល់ថ្ងៃថ្មី ផ្ញើមូលហេតុដែលនៅសល់ម្តងទៀតម្តង
+    reported = rep["items"]
+
+    data = collect_not_approved(sorted(task_chat_ids))                      # ១+២
+    # ៣. គ្មានមូលហេតុ → សួរអ្នកកាន់ការងារ។ មាន @username → ឆាតផ្ទាល់ (DM) ម្នាក់មួយសារ; គ្មាន → សួរក្នុងក្រុម Team
+    dm = {}   # handle → {"name":..., "items":[(team,row,key)]}
+    for team in VALID_TEAMS:
+        rows, chat = data.get(team) or [], team_chat_mapping.get(team)
+        if not rows:
+            continue
+        no_dm_rows = []
+        for r in rows:
+            if r["reason"]:
+                continue
+            key = f"{team}|{r['task']}|{r['site']}"
+            if key in asked_today:
+                continue
+            h = staff_handle(r["staff"])
+            if h:
+                dm.setdefault(h, {"name": _clean(r["staff"]), "items": []})["items"].append((team, r, key))
+            else:
+                no_dm_rows.append(r)
+        if no_dm_rows and chat:
+            q_text, q_keys = build_question_message(team, no_dm_rows, asked_today)
+            if q_text:
+                try:
+                    _send_long(client, chat, q_text)
+                    asked_today.update(q_keys)
+                except Exception as e:
+                    print(f"⚠️ Question to {team} failed: {e}")
+    for handle, info in dm.items():
+        lines = [f"សួស្តី{_call(info['name'])} {info['name']}"]
+        lines += [f"ការងារ {r['task']} site {r['site']} ({team}) មានមូលហេតុអី ឬខុសអី បានមិន Approved?" for team, r, _ in info["items"]]
+        lines.append("សូមឆ្លើយតបក្នុងឆាតនេះ ហើយសរសេរមូលហេតុក្នុងជួរ Remark ផង។")
+        try:
+            _send_long(client, resolve_dm_target(client, handle), "\n".join(lines))
+            asked_today.update(k for _, _, k in info["items"])
+            print(f"✉️ DM → {handle}: {len(info['items'])} Site")
+        except Exception as e:
+            print(f"⚠️ DM to {handle} failed: {e} — ទុកសួរក្នុងក្រុមវិញ")
+            for team in {t for t, _, _ in info["items"]}:
+                chat = team_chat_mapping.get(team)
+                rows = [r for t, r, _ in info["items"] if t == team]
+                q_text, q_keys = build_question_message(team, rows, asked_today)
+                if q_text and chat:
+                    try:
+                        _send_long(client, chat, q_text); asked_today.update(q_keys)
+                    except Exception as e2:
+                        print(f"⚠️ Fallback question to {team} failed: {e2}")
+    # ៤. បានមូលហេតុហើយ → ផ្ញើចូលក្រុម Team
+    for team in VALID_TEAMS:
+        rows, chat = data.get(team) or [], team_chat_mapping.get(team)
+        if not rows or not chat:
+            continue
+        r_text, fresh = build_reason_message(team, rows, reported)
+        if r_text:
+            try:
+                _send_long(client, chat, r_text)
+                reported.update(fresh)
+            except Exception as e:
+                print(f"⚠️ Reason report to {team} failed: {e}")
+    asked["keys"] = sorted(asked_today)
+    warning_state["_asked"] = asked
+    warning_state["_reported"] = rep
+
+
 def main():
     api_id_raw = os.environ.get("TELEGRAM_API_ID")
     api_hash = os.environ.get("TELEGRAM_API_HASH")
@@ -514,9 +868,24 @@ def main():
     abs_week = (today.toordinal() - 1) // 7  # លេខសប្តាហ៍ពិត (ប្រើរាប់ជាប់គ្នាឆ្លងខែ)
     warning_state = load_warning_state()
 
+    if os.environ.get("EVENT_ACTION") == "daily-report-hourly":
+        if not (HOURLY_FROM <= now.hour <= HOURLY_TO) and os.environ.get("FORCE_RESEND") != "1":
+            print(f"ℹ️ Hourly: outside {HOURLY_FROM}-{HOURLY_TO}h (now {now:%H:%M}) — skip")
+            return
+        with TelegramClient(StringSession(session_str), api_id, api_hash) as client:
+            try:
+                client.get_dialogs()
+            except Exception as e:
+                print(f"⚠️ get_dialogs failed: {e}")
+            run_hourly(client, task_chat_ids, team_chat_mapping, warning_state, today, now)
+        save_warning_state(warning_state)
+        return
+
     # ===== ផ្ញើតាមម៉ោងថេរ (GitHub Actions free ចាប់ផ្តើមយឺតមិនទៀង) =====
     # ស្វ័យប្រវត្តិ = schedule របស់ GitHub ឬ ហៅពី cron ខាងក្រៅ (RUN_SOURCE=cron)។ ដំណើរការដោយដៃ = មិនមែនទាំងពីរ។
-    is_scheduled = (os.environ.get("GITHUB_EVENT_NAME") in ("schedule", "repository_dispatch")
+    is_scheduled = (os.environ.get("GITHUB_EVENT_NAME") == "schedule"
+                    or (os.environ.get("GITHUB_EVENT_NAME") == "repository_dispatch"
+                        and os.environ.get("EVENT_ACTION") != "daily-report-evening")   # ល្ងាច = ទិន្នន័យទាំងអស់
                     or os.environ.get("RUN_SOURCE") == "cron")
     print(f"ℹ️ Run started {now:%Y-%m-%d %H:%M:%S} (Cambodia) | event={os.environ.get('GITHUB_EVENT_NAME')} "
           f"| source={os.environ.get('RUN_SOURCE') or '-'}")
@@ -536,6 +905,8 @@ def main():
             print(f"ℹ️ Not waiting (now {now:%H:%M}, SEND_AT {send_at}) — sending immediately")
 
     team_rows = {team: [] for team in VALID_TEAMS}
+    tally = new_tally()
+    team_left = {team: {} for team in VALID_TEAMS}   # {team: {task: Site មិនទាន់ Approved}} សម្រាប់លិខិតប្រចាំខែ
 
     delivery = {}        # code -> {"groups": [...], "sent": n, "failed": n, "no_rows": bool, "fetch_failed": bool}
     unmapped_with_rows = []
@@ -574,6 +945,7 @@ def main():
             canon = {c.lower(): c for c in cols_to_show}
             df_task = df_task.rename(columns={c: canon[c.lower().strip()] for c in df_task.columns if c.lower().strip() in canon})
             available_cols = [c for c in cols_to_show if c in df_task.columns]
+            tally_task(df_task, task_code, tally)
 
             if available_cols and "Team" in df_task.columns:
                 df_detail = df_task[available_cols].copy()
@@ -620,6 +992,9 @@ def main():
 
                     if not df_team.empty and "Site name" in df_task.columns:
                         groups = split_sites_into_weeks(df_team, task_code)
+                        _left = sum(len(w) for w in groups.values()) - sum(approved_count(w) for w in groups.values())
+                        if _left > 0:
+                            team_left[team][str(task_code).strip()] = _left
                         stats = {}
                         # Result បំពេញតាមលំដាប់សប្តាហ៍: Site ដែល Approved បំពេញ Target សប្តាហ៍ទី 1 មុន
                         # ទើបលើសទៅសប្តាហ៍ទី 2, 3... (មិនរាប់តាមទីតាំង Site ក្នុងបញ្ជីអក្សរក្រម)
@@ -642,6 +1017,7 @@ def main():
             if code in task_chat_ids:
                 continue
             df_x = fetch_csv(code)
+            tally_task(df_x, code, tally)
             if df_x is None or df_x.empty or "Team" not in df_x.columns or "Site name" not in df_x.columns:
                 continue
             ok = df_x["Team"].astype(str).str.strip().isin(VALID_TEAMS) & df_x["Site name"].notna() \
@@ -739,6 +1115,25 @@ def main():
                     warning_state[team]["draft_sent"] = True
                 for team in zero_teams:
                     warning_state[team]["zero_sent_week"] = abs_week
+
+    # ៥. របាយការណ៍សរុបប្រចាំសប្តាហ៍ (PDF) ថ្ងៃសៅរ៍ព្រឹក (Run ស្វ័យប្រវត្តិ) ផ្ញើចូល Main Group
+        if ((today.weekday() == 5 and is_scheduled) or os.environ.get("FORCE_SAT_REPORT") == "1") \
+                and warning_state.get("_sat_report") != today.isoformat():
+            try:
+                pdf = render_pdf(build_saturday_html(tally, weekly_records(today), today), f"report_summary_{today.isoformat()}.pdf")
+                if send_with_caption(client, MAIN_GROUP_ID, pdf, f"📊 របាយការណ៍ការងារ Power CHA — សរុបតាមធីម ({today:%d/%m/%Y})"):
+                    warning_state["_sat_report"] = today.isoformat()
+            except Exception as e:
+                print(f"⚠️ Saturday report failed: {e}")
+
+    # ៤. លិខិតព្រមានប្រចាំខែ: ថ្ងៃចុងខែ ក្រុមណាមានការងារមិនទាន់ចប់ក្នុងខែ រុញទៅខែក្រោយ ម្តងក្នុងមួយខែ
+        # ផ្ញើតែនៅ Run ល្ងាច (ទិន្នន័យចុងថ្ងៃ) ថ្ងៃចុងខែ
+        month_end = (today + timedelta(days=1)).day == 1 and (os.environ.get("EVENT_ACTION") == "daily-report-evening" or os.environ.get("MONTHLY_ANYTIME") == "1")
+        if month_end and warning_state.get("_monthly_sent") != today.strftime("%Y-%m") and any(team_left.values()):
+            mpath = make_monthly_letter(team_left, today)
+            if mpath and send_with_caption(client, MAIN_GROUP_ID, mpath,
+                                           f"⚠️ សេចក្តីព្រាងលិខិតព្រមានប្រចាំខែ {today:%B %Y} (ការងារមិនចប់ក្នុងខែ រុញទៅខែក្រោយ)"):
+                warning_state["_monthly_sent"] = today.strftime("%Y-%m")
 
     if is_scheduled:
         warning_state["_last_run"] = today.isoformat()
