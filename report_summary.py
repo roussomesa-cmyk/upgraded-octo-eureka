@@ -789,7 +789,6 @@ def run_hourly(client, task_chat_ids, team_chat_mapping, warning_state, today, n
     for handle, info in dm.items():
         lines = [f"សួស្តី{_call(info['name'])} {info['name']}"]
         lines += [f"ការងារ {r['task']} site {r['site']} ({team}) មានមូលហេតុអី ឬខុសអី បានមិន Approved?" for team, r, _ in info["items"]]
-        lines.append("សូមឆ្លើយតបក្នុងឆាតនេះ ហើយសរសេរមូលហេតុក្នុងជួរ Remark ផង។")
         try:
             _send_long(client, resolve_dm_target(client, handle), "\n".join(lines))
             asked_today.update(k for _, _, k in info["items"])
