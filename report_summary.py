@@ -555,6 +555,8 @@ MASTER_SUM_TAB = os.environ.get("MASTER_SUM_TAB") or ("SUM" if MASTER_SPREADSHEE
 MASTER_REASON_TABS = [t.strip().upper() for t in (os.environ.get("MASTER_REASON_TABS") or "").split(",") if t.strip()]
 REASON_COLUMNS = ["Remark", "Remark ELE", "History Task"]
 # អ្នកកាន់ការងារដែលហៅ "អូន" (ក្រៅពីនេះហៅ "បង")។ ឧ. {"Teth"}
+# អ្នកកាន់ការងារដែលមិនត្រូវសួរសោះ (ទាំងឆាតផ្ទាល់ និងក្នុងក្រុម)
+NEVER_ASK = {"Vo Hong Lam", "Oeun Samart", "Teth"}
 CALL_AS_ADIK = {"Trol Kea", "Ing Sokkhemarak", "Oum Sopheaktra"}
 JUNK_REASONS = {"-", ",", "0", "#n/a", "new target", "ok"}
 _EMPTY = ("", "nan", "none", "#n/a", "n/a")
@@ -761,7 +763,7 @@ def run_hourly(client, task_chat_ids, team_chat_mapping, warning_state, today, n
             if r["reason"]:
                 continue
             key = f"{team}|{r['task']}|{r['site']}"
-            if key in asked_today:
+            if key in asked_today or _clean(r["staff"]).casefold() in {x.casefold() for x in NEVER_ASK}:
                 continue
             h = staff_handle(r["staff"])
             if h:
