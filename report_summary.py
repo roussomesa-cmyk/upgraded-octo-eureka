@@ -583,6 +583,7 @@ def staff_tag(name):
 def _reason_from(row, cols):
     for col in cols:
         v = _clean(row.get(col, "")) if col in row.index else ""
+        v = v.lstrip(" ,;.")
         if v and v.lower() not in JUNK_REASONS:
             return v
     return ""
@@ -642,7 +643,9 @@ def collect_not_approved(task_codes):
         df["Team"] = df["Team"].astype(str).str.strip()
         df = df[df["Team"].isin(VALID_TEAMS)]
         if "Result" in df.columns:
-            df = df[df["Result"].astype(str).str.strip().str.lower() != "approved"]
+            _res = df["Result"].fillna("").astype(str).str.strip().str.lower()
+            # យកតែ Site ដែលមាន Result ហើយមិនមែន Approved (Not Approved) — មិនយក Site មិនទាន់ធ្វើ (Result ទទេ)
+            df = df[(_res != "approved") & (~_res.isin(_EMPTY))]
         mreasons = master_reasons(code)
         holder = holders.get(str(code).strip().upper(), "")
         for _, r in df.iterrows():
@@ -654,6 +657,7 @@ def collect_not_approved(task_codes):
                       or _reason_from(r, REASON_COLUMNS))     # ១) Sheet មេ ២) Sheet Report ខ្លួនឯង
             out[r["Team"]].append({"task": code, "site": site,
                                    "staff": holder,
+                                   "site_staff": _clean(r.get("Name staff", "")) if "Name staff" in df.columns else "",
                                    "reason": reason})
     return out
 
@@ -688,7 +692,7 @@ def build_question_message(team, rows, asked_today):
 
 # ---------- ជំហានទី ៤: បានមូលហេតុហើយ → ផ្ញើចូលក្រុម (Tag អ្នកកាន់ការងារ + Site + មូលហេតុ) ----------
 def build_reason_message(team, rows, reported):
-    """ត្រឡប់ (text ឬ None, {key: reason} ថ្មី/ប្តូរ)។ ផ្ញើតែមូលហេតុថ្មី ឬដែលបានប្តូរ។"""
+    """មូលហេតុដែលបានហើយ → ក្រុម Team: ប្រាប់មេធីម និងកូនចៅអ្នកកាន់ Site។ ត្រឡប់ (text ឬ None, {key: reason} ថ្មី/ប្តូរ)"""
     groups, fresh = {}, {}
     for r in rows:
         if not r["reason"]:
@@ -696,13 +700,17 @@ def build_reason_message(team, rows, reported):
         key = f"{team}|{r['task']}|{r['site']}"
         if reported.get(key) == r["reason"]:
             continue
-        groups.setdefault((_clean(r["staff"]), r["reason"]), []).append(r)
+        groups.setdefault(r["reason"], []).append(r)
         fresh[key] = r["reason"]
     if not groups:
         return None, {}
+    mention = TEAM_TELEGRAM_MENTIONS.get(team, TEAM_LEADERS.get(team, team))
+    leader = TEAM_LEADERS.get(team, team)
     blocks = []
-    for (holder, reason), rs in groups.items():
-        lines = [staff_tag(holder)] + [f"• {x['task']} {x['site']}" for x in rs] + [reason[:300]]
+    for reason, rs in groups.items():
+        staff = [n for n in dict.fromkeys(x["site_staff"] for x in rs if x.get("site_staff")) if n.casefold() != leader.casefold()]
+        head = f"បង {mention} ({leader})" + (f" និង {', '.join(staff)}" if staff else " និងកូនចៅអ្នកកាន់ Site")
+        lines = [head] + [f"• {x['task']} {x['site']}" + (f" ({x['site_staff']})" if x.get("site_staff") else "") for x in rs] + [reason[:300]]
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks), fresh
 
