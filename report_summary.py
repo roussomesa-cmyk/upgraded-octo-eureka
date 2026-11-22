@@ -717,6 +717,13 @@ def build_question_message(team, rows, asked_today):
 
 
 # ---------- ជំហានទី ៤: បានមូលហេតុហើយ → ផ្ញើចូលក្រុម (Tag អ្នកកាន់ការងារ + Site + មូលហេតុ) ----------
+def _tidy_reason(v):
+    """លុបសញ្ញាក្បៀសស្ទួន/ទទេ ឧ. 'with ,,,,,Air Conditioner,,,Other' → 'with Air Conditioner, Other'"""
+    v = re.sub(r"\b(with|of|for)\s*,[\s,]*", r"\1 ", str(v), flags=re.I)
+    v = re.sub(r"\s*,[\s,]*", ", ", v)
+    return v.strip(" ,;.")
+
+
 def build_reason_message(team, rows, reported):
     """មូលហេតុដែលបានហើយ → ក្រុម Team: ប្រាប់មេធីម និងកូនចៅអ្នកកាន់ Site។ ត្រឡប់ (text ឬ None, {key: reason} ថ្មី/ប្តូរ)"""
     groups, fresh = {}, {}
@@ -735,8 +742,11 @@ def build_reason_message(team, rows, reported):
     blocks = []
     for reason, rs in groups.items():
         staff = [n for n in dict.fromkeys(x["site_staff"] for x in rs if x.get("site_staff")) if n.casefold() != leader.casefold()]
-        head = f"បង {mention} ({leader})" + (f" និង {', '.join(staff)}" if staff else " និងកូនចៅអ្នកកាន់ Site")
-        lines = [head] + [f"• {x['task']} {x['site']}" + (f" ({x['site_staff']})" if x.get("site_staff") else "") for x in rs] + [reason[:300]]
+        head = f"បង {mention} ({leader})" + (f" & {', '.join(staff)}" if staff else "")
+        many = len(staff) > 1          # បុគ្គលិកច្រើននាក់ → ដាក់ឈ្មោះក្រោយ Site នីមួយៗ
+        lines = [head, "ជួយឆែកការងារនេះដែលខុស មិនទាន់ Approved"]
+        lines += [f"• {x['task']} {x['site']}" + (f" ({x['site_staff']})" if many and x.get("site_staff") else "") for x in rs]
+        lines.append(f"មូលហេតុ: {_tidy_reason(reason)[:300]}")
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks), fresh
 
