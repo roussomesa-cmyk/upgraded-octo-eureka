@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone, timedelta
+import csv
 import io
 import json
 import os
@@ -556,6 +557,7 @@ MASTER_REASON_TABS = [t.strip().upper() for t in (os.environ.get("MASTER_REASON_
 REASON_COLUMNS = ["Remark", "Remark ELE", "History Task"]
 # អ្នកកាន់ការងារដែលហៅ "អូន" (ក្រៅពីនេះហៅ "បង")។ ឧ. {"Teth"}
 # អ្នកកាន់ការងារដែលមិនត្រូវសួរសោះ (ទាំងឆាតផ្ទាល់ និងក្នុងក្រុម)
+ASK_FROM, ASK_TO = 9, 10      # សួរអ្នកកាន់ការងារចន្លោះម៉ោង 9:00–10:00
 NEVER_ASK = {"Vo Hong Lam", "Oeun Samart", "Teth"}
 CALL_AS_ADIK = {"Trol Kea", "Ing Sokkhemarak", "Oum Sopheaktra"}
 JUNK_REASONS = {"-", ",", "0", "#n/a", "new target", "ok"}
@@ -632,8 +634,32 @@ def master_reasons(code):
     return out
 
 
+def site_staff_map():
+    """{កូដ Site → ឈ្មោះអ្នកកាន់ Site} ពី Tab allteam ជួរ Q:U (Q=site name, R=Code, S=Mether, T=Staff, U=Team)"""
+    url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet=allteam"
+    out = {}
+    try:
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=60)
+        if res.status_code != 200:
+            print(f"⚠️ allteam HTTP {res.status_code}")
+            return out
+        res.encoding = "utf-8"
+        for row in csv.reader(io.StringIO(res.text)):
+            if len(row) < 21:
+                continue
+            q, code, staff = row[16].strip(), row[17].strip(), row[19].strip()
+            if staff and code and code.lower() != "code":
+                out[code.upper()] = staff
+                if q:
+                    out.setdefault(q.upper(), staff)
+    except requests.RequestException as e:
+        print(f"⚠️ allteam: {e}")
+    return out
+
+
 def collect_not_approved(task_codes):
     holders = task_holders()
+    site_staff = site_staff_map()
     """ត្រឡប់ {team: [ {task, site, staff, reason} ]} សម្រាប់ជួរ Result ≠ Approved"""
     out = {t: [] for t in VALID_TEAMS}
     for code in task_codes:
@@ -657,7 +683,7 @@ def collect_not_approved(task_codes):
                       or _reason_from(r, REASON_COLUMNS))     # ១) Sheet មេ ២) Sheet Report ខ្លួនឯង
             out[r["Team"]].append({"task": code, "site": site,
                                    "staff": holder,
-                                   "site_staff": _clean(r.get("Name staff", "")) if "Name staff" in df.columns else "",
+                                   "site_staff": site_staff.get(site.upper()) or (_clean(r.get("Name staff", "")) if "Name staff" in df.columns else ""),
                                    "reason": reason})
     return out
 
@@ -752,7 +778,7 @@ def run_hourly(client, task_chat_ids, team_chat_mapping, warning_state, today, n
     day = today.isoformat()
     asked = warning_state.get("_asked", {})
     if asked.get("date") != day:
-        asked = {"date": day, "keys": []}
+        asked = {"date": day, "keys": [], "round_done": False}
     asked_today = set(asked["keys"])
     rep = warning_state.get("_reported", {})
     if rep.get("date") != day:
@@ -760,6 +786,10 @@ def run_hourly(client, task_chat_ids, team_chat_mapping, warning_state, today, n
     reported = rep["items"]
 
     data = collect_not_approved(sorted(task_chat_ids))                      # ១+២
+    # ការសួរអ្នកកាន់ការងារ៖ ថ្ងៃច័ន្ទ–សៅរ៍ (មិនសួរថ្ងៃអាទិត្យ) ហើយម្តងក្នុងមួយថ្ងៃ (ជុំដំបូងនៃថ្ងៃ)
+    # ម៉ោងសួរ៖ ចន្លោះ 9:00–10:00 (ម៉ោងកម្ពុជា) ប៉ុណ្ណោះ
+    in_ask_hour = now is None or ASK_FROM <= now.hour < ASK_TO
+    ask_today_allowed = (today.weekday() != 6 and in_ask_hour and not asked.get("round_done")) or os.environ.get("FORCE_ASK") == "1"
     # ៣. គ្មានមូលហេតុ → សួរអ្នកកាន់ការងារ។ មាន @username → ឆាតផ្ទាល់ (DM) ម្នាក់មួយសារ; គ្មាន → សួរក្នុងក្រុម Team
     dm = {}   # handle → {"name":..., "items":[(team,row,key)]}
     for team in VALID_TEAMS:
@@ -768,7 +798,7 @@ def run_hourly(client, task_chat_ids, team_chat_mapping, warning_state, today, n
             continue
         no_dm_rows = []
         for r in rows:
-            if r["reason"]:
+            if r["reason"] or not ask_today_allowed:
                 continue
             key = f"{team}|{r['task']}|{r['site']}"
             if key in asked_today or _clean(r["staff"]).casefold() in {x.casefold() for x in NEVER_ASK}:
@@ -804,6 +834,8 @@ def run_hourly(client, task_chat_ids, team_chat_mapping, warning_state, today, n
                         _send_long(client, chat, q_text); asked_today.update(q_keys)
                     except Exception as e2:
                         print(f"⚠️ Fallback question to {team} failed: {e2}")
+    if ask_today_allowed:
+        asked["round_done"] = True          # ជុំសួរនៃថ្ងៃនេះបានធ្វើរួច → ម៉ោងបន្ទាប់មិនសួរទៀត
     # ៤. បានមូលហេតុហើយ → ផ្ញើចូលក្រុម Team
     for team in VALID_TEAMS:
         rows, chat = data.get(team) or [], team_chat_mapping.get(team)
@@ -819,6 +851,152 @@ def run_hourly(client, task_chat_ids, team_chat_mapping, warning_state, today, n
     asked["keys"] = sorted(asked_today)
     warning_state["_asked"] = asked
     warning_state["_reported"] = rep
+
+
+# ===== របាយការណ៍សរុបប្រចាំសប្តាហ៍ (ថ្ងៃសៅរ៍ព្រឹក) ជា PDF ៥ ទំព័រ =====
+KH_DIGITS = str.maketrans("0123456789", "០១២៣៤៥៦៧៨៩")
+KH_MONTHS = ["មករា", "កុម្ភៈ", "មីនា", "មេសា", "ឧសភា", "មិថុនា", "កក្កដា", "សីហា", "កញ្ញា", "តុលា", "វិច្ឆិកា", "ធ្នូ"]
+
+
+def kh(n):
+    return str(n).translate(KH_DIGITS)
+
+
+def new_tally():
+    return {"teams": {t: {"target": 0, "approved": 0, "notappr": 0, "pending": 0, "na_tasks": {}, "pe_tasks": {}} for t in VALID_TEAMS},
+            "zero": []}
+
+
+def tally_task(df, code, tally):
+    """រាប់ Target / Approved / មិន Approved (មាន Result តែមិនមែន Approved) / មិនទាន់ធ្វើ (Result ទទេ) តាមធីម"""
+    code = str(code).strip()
+    if df is None or df.empty or "Team" not in df.columns or "Site name" not in df.columns:
+        return
+    d = df.copy()
+    d["Team"] = d["Team"].astype(str).str.strip()
+    d = d[d["Team"].isin(VALID_TEAMS) & d["Site name"].notna()
+          & ~d["Site name"].astype(str).str.strip().str.lower().isin(_EMPTY)]
+    if d.empty:
+        tally["zero"].append(code)
+        return
+    res = d["Result"].fillna("").astype(str).str.strip() if "Result" in d.columns else pd.Series([""] * len(d), index=d.index)
+    low = res.str.casefold()
+    for team in VALID_TEAMS:
+        m = d["Team"] == team
+        n = int(m.sum())
+        if not n:
+            continue
+        ap = int((low[m] == "approved").sum())
+        blank = int((low[m].isin(_EMPTY)).sum())
+        na = n - ap - blank
+        t = tally["teams"][team]
+        t["target"] += n; t["approved"] += ap; t["notappr"] += na; t["pending"] += blank
+        if na:
+            t["na_tasks"][code] = t["na_tasks"].get(code, 0) + na
+        if blank:
+            t["pe_tasks"][code] = t["pe_tasks"].get(code, 0) + blank
+
+
+def weekly_records(today):
+    """ចំនួនកិច្ចការ Approved ដែលបានកត់ត្រាក្នុងមួយសប្តាហ៍ (1–7, 8–14, 15–21 …) ពី Tab Daily_Count"""
+    df = fetch_csv("Daily_Count")
+    out = {t: [0] * ((today.day + 6) // 7) for t in VALID_TEAMS}
+    if df is None or df.empty:
+        return out
+    dcol = df.columns[0]
+    for _, r in df.iterrows():
+        m = re.search(r"(\d{4})-(\d{2})-(\d{2})", str(r[dcol]))
+        if not m:
+            continue
+        y, mo, da = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if (y, mo) != (today.year, today.month) or da > today.day:
+            continue
+        w = (da - 1) // 7
+        for t in VALID_TEAMS:
+            try:
+                out[t][w] += int(float(r.get(t, 0) or 0))
+            except (ValueError, TypeError):
+                pass
+    return out
+
+
+def build_saturday_html(tally, weekly, today):
+    T = tally["teams"]
+    tot = {k: sum(T[t][k] for t in VALID_TEAMS) for k in ("target", "approved", "notappr", "pending")}
+    pc = lambda a, b: int(a * 100 / b + 0.5) if b else 0
+    weeks = (today.day + 6) // 7
+    title_sub = f"សរុប {kh(weeks)}សប្ដាហ៍ ({kh(1)}–{kh(today.day)} {KH_MONTHS[today.month - 1]} {today.year}) តាមធីមនីមួយៗ"
+    zero = ", ".join(sorted(set(tally["zero"])))
+    css = """
+@page{size:960px 540px;margin:0}
+*{box-sizing:border-box}
+body{margin:0;font-family:'Noto Sans Khmer','Noto Sans','Khmer OS',sans-serif;-webkit-print-color-adjust:exact}
+.s{width:960px;height:540px;padding:56px 64px;page-break-after:always;overflow:hidden;position:relative}
+.dark{background:#14213d;color:#f6f3ec}.light{background:#f6f1e8;color:#14213d}
+h1{font-size:46px;margin:30px 0 10px}h2{font-size:28px;margin:0 0 18px}
+.sub{font-size:17px;opacity:.9}.cards{display:flex;gap:18px;margin-top:34px}
+.c{flex:1;background:#1f2f57;border-radius:10px;padding:18px 20px}.c b{display:block;font-size:46px}.c span{font-size:15px}
+.note{font-size:12px;opacity:.8;margin-top:22px}
+table{border-collapse:collapse;width:100%;font-size:15px}th{background:#14213d;color:#fff;padding:7px;border:1px solid #c9c4ba}
+td{padding:6px 8px;border:1px solid #c9c4ba;text-align:center;background:#f6f1e8}tr.tot td{background:#14213d;color:#fff;font-weight:bold}
+.g{color:#1f8a5b}.r{color:#c0394b}.o{color:#c98a14}
+.bar{display:flex;align-items:center;margin:11px 0;font-size:14px}.bar .n{width:90px}.bar .b{display:flex;height:27px;width:560px}.bar .l{margin-left:14px}
+.leg{display:flex;gap:40px;font-size:13px;margin:0 0 6px 90px}.leg i{display:inline-block;width:14px;height:14px;margin-right:6px;vertical-align:-2px}
+.chart{display:flex;align-items:flex-end;gap:22px;height:300px;margin-top:10px;padding-left:10px;border-bottom:1px solid #14213d}
+.grp{display:flex;align-items:flex-end;gap:5px;height:100%}.col{width:26px;text-align:center;font-size:12px}.col div{width:100%}
+.lab{display:flex;gap:22px;padding-left:10px;font-size:13px}.lab div{width:88px;text-align:center}
+"""
+    slides = []
+    slides.append(f"""<div class="s dark"><h1>របាយការណ៍ការងារ Power CHA</h1><div class="sub">{title_sub} · Sheet A1 ដល់ K5</div>
+<div class="cards"><div class="c"><b>{kh(tot['target'])}</b><span>គោលដៅសរុប</span></div>
+<div class="c"><b style="color:#5fd3a2">{kh(tot['approved'])}</b><span>Approved ({kh(pc(tot['approved'], tot['target']))}%)</span></div>
+<div class="c"><b style="color:#ff7a90">{kh(tot['notappr'])}</b><span>មិន Approved</span></div>
+<div class="c"><b style="color:#f6b94d">{kh(tot['pending'])}</b><span>មិនទាន់ធ្វើ</span></div></div>
+<div class="note">ស្ថានភាព {kh(today.strftime('%d/%m/%Y'))}{(' · Sheet គ្មានគោលដៅ (០) មិនបានបង្ហាញ៖ ' + zero) if zero else ''}</div></div>""")
+    bars = ""
+    for t in VALID_TEAMS:
+        x = T[t]; n = x["target"] or 1
+        bars += (f'<div class="bar"><div class="n">{t}</div><div class="b">'
+                 f'<div style="width:{x["approved"]*100/n:.1f}%;background:#1f8a5b"></div>'
+                 f'<div style="width:{x["notappr"]*100/n:.1f}%;background:#c0394b"></div>'
+                 f'<div style="width:{x["pending"]*100/n:.1f}%;background:#e5a11b"></div></div>'
+                 f'<div class="l">{x["approved"]}/{x["target"]} · {pc(x["approved"], x["target"])}%</div></div>')
+    slides.append(f"""<div class="s light"><h2>ស្ថានភាពតាមធីម៖ Approved · មិន Approved · មិនទាន់ធ្វើ</h2>
+<div class="leg"><span><i style="background:#1f8a5b"></i>Approved</span><span><i style="background:#c0394b"></i>មិន Approved</span><span><i style="background:#e5a11b"></i>មិនទាន់ធ្វើ</span></div>{bars}</div>""")
+    rows = "".join(f'<tr><td>{t}</td><td>{T[t]["target"]}</td><td class="g">{T[t]["approved"]}</td><td class="r">{T[t]["notappr"]}</td>'
+                   f'<td class="o">{T[t]["pending"]}</td><td>{pc(T[t]["approved"], T[t]["target"])}%</td></tr>' for t in VALID_TEAMS)
+    slides.append(f"""<div class="s light"><h2>តារាងសរុបតាមធីម</h2><table><tr><th>ធីម</th><th>គោលដៅ</th><th>Approved</th><th>មិន Approved</th><th>មិនទាន់ធ្វើ</th><th>%</th></tr>{rows}
+<tr class="tot"><td>សរុប</td><td>{tot['target']}</td><td>{tot['approved']}</td><td>{tot['notappr']}</td><td>{tot['pending']}</td><td>{pc(tot['approved'], tot['target'])}%</td></tr></table></div>""")
+    shades = ["#9fb6d6", "#4a77a8", "#14213d", "#6b8e9c", "#2c4a6b"]
+    mx = max([v for t in VALID_TEAMS for v in weekly[t]] + [1])
+    groups = labs = ""
+    for t in VALID_TEAMS:
+        cols = "".join(f'<div class="col"><span>{v}</span><div style="height:{v*250/mx:.0f}px;background:{shades[i % len(shades)]}"></div></div>' for i, v in enumerate(weekly[t]))
+        groups += f'<div class="grp">{cols}</div>'
+        labs += f'<div>{t[-3:]} · {sum(weekly[t])}</div>'
+    legend = "".join(f'<span><i style="background:{shades[i % len(shades)]}"></i>សប្ដាហ៍ទី{kh(i+1)} ({kh(i*7+1)}–{kh(min((i+1)*7, today.day))})</span>' for i in range(weeks))
+    slides.append(f"""<div class="s light"><h2>ចំនួនកិច្ចការកត់ត្រាក្នុងមួយសប្ដាហ៍</h2><div class="leg" style="margin-left:0">{legend}</div>
+<div class="chart">{groups}</div><div class="lab">{labs}</div></div>""")
+    fmt = lambda d: ", ".join(f"{k}:{v}" for k, v in sorted(d.items())) or "–"
+    rows = "".join(f'<tr><td>{t}</td><td class="r">{fmt(T[t]["na_tasks"])}</td><td class="o">{fmt(T[t]["pe_tasks"])}</td><td>{T[t]["pending"]}</td></tr>' for t in VALID_TEAMS)
+    slides.append(f"""<div class="s light"><h2>ការងារមិន Approved និងមិនទាន់ធ្វើ (ដាក់ដោយឡែក)</h2><table><tr><th>ធីម</th><th>មិន Approved</th><th>មិនទាន់ធ្វើ (Sheet : ចំនួន)</th><th>សរុប</th></tr>{rows}</table>
+<div class="note" style="color:#14213d">មិនទាន់ធ្វើ = គោលដៅ − Approved − មិន Approved</div></div>""")
+    return f"<!doctype html><html><head><meta charset='utf-8'><style>{css}</style></head><body>{''.join(slides)}</body></html>"
+
+
+def render_pdf(html, pdf_path):
+    import shutil, subprocess
+    html_path = os.path.abspath(pdf_path + ".html")
+    with open(html_path, "w", encoding="utf-8") as fh:
+        fh.write(html)
+    exe = shutil.which("google-chrome") or shutil.which("chromium") or shutil.which("chromium-browser") or os.environ.get("CHROME_BIN")
+    if not exe:
+        raise RuntimeError("រក Chrome មិនឃើញ")
+    subprocess.run([exe, "--headless=new", "--no-sandbox", "--disable-gpu", "--no-pdf-header-footer",
+                    f"--print-to-pdf={os.path.abspath(pdf_path)}", "file://" + html_path], check=True, timeout=120,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    os.remove(html_path)
+    return pdf_path
 
 
 def main():
