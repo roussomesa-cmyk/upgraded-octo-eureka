@@ -330,11 +330,19 @@ def pct(result, target):
     return int(result * 100 / target + 0.5) if target else 0
 
 
-def plan_weeks(store, week, total, cum, weeks_count):
+def plan_weeks(store, week, total, cum, weeks_count, hist=None):
     """Target សប្តាហ៍: ចែកការងារដែលនៅសល់ (Total − អ្វីដែលធ្វើរួចមុនសប្តាហ៍នេះ) ស្មើៗលើសប្តាហ៍ដែលនៅសល់ (សល់ទុកសប្តាហ៍មុនៗ)
        Result សប្តាហ៍ = ចំនួន Approved កើនឡើងក្នុងសប្តាហ៍នេះ (មិនកាត់ត្រឹម Target — លើស > 100% បាន ហើយលើសនោះកាត់បន្ថយ Target សប្តាហ៍បន្ទាប់)
        store = {"b1":..,"t1":..,"b2":..} ត្រូវរក្សាក្នុង state ដើម្បីដឹងតម្លៃចាប់ផ្ដើមសប្តាហ៍។ ត្រឡប់ {week: (target, result)}"""
     plan = {}
+    if hist and week > 1 and "b1" not in store:
+        # ដំណើរការដំបូង (ពាក់កណ្ដាលខែ) → សង់ប្រវត្តិសប្តាហ៍មុនៗពីការគណនាចាស់ (Result ពេញ Target សប្តាហ៍មុនមុន)
+        acc = 0
+        for k in range(1, week):
+            t, r = hist.get(k, (0, 0))
+            store[f"b{k}"], store[f"t{k}"] = acc, t
+            acc += r
+        store[f"b{week}"] = acc
     for w in range(1, week + 1):
         if f"b{w}" not in store:
             if w == 1:
@@ -1344,7 +1352,8 @@ def main():
                         _total = sum(len(w) for w in groups.values())
                         _cum = sum(approved_count(wdf) for wdf in groups.values())
                         _store = warning_state.setdefault("_plan", {}).setdefault(get_start_date(today).isoformat(), {}).setdefault(team, {}).setdefault(str(task_code).strip(), {})
-                        _plan = plan_weeks(_store, min(current_week, DEFAULT_WEEKS), _total, _cum, task_weeks(task_code))
+                        _hist = {k: (v["Target"], v["Result"]) for k, v in stats.items()}
+                        _plan = plan_weeks(_store, min(current_week, DEFAULT_WEEKS), _total, _cum, task_weeks(task_code), _hist)
                         team_rows[team].append({"Task": task_code, "Weeks": task_weeks(task_code), "Stats": stats, "Total": _total, "Cum": _cum, "Plan": _plan})
 
         # ១.១ Task ដែលមានការងារ Team តែគ្មាន Chat ID ក្នុង 'Team chat IDs' (មិនដែលត្រូវបានផ្ញើ)
