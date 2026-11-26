@@ -335,7 +335,7 @@ def plan_weeks(store, week, total, cum, weeks_count, hist=None):
        Result សប្តាហ៍ = ចំនួន Approved កើនឡើងក្នុងសប្តាហ៍នេះ (មិនកាត់ត្រឹម Target — លើស > 100% បាន ហើយលើសនោះកាត់បន្ថយ Target សប្តាហ៍បន្ទាប់)
        store = {"b1":..,"t1":..,"b2":..} ត្រូវរក្សាក្នុង state ដើម្បីដឹងតម្លៃចាប់ផ្ដើមសប្តាហ៍។ ត្រឡប់ {week: (target, result)}"""
     plan = {}
-    if hist and week > 1 and "b1" not in store:
+    if hist and week > 1 and any(f"b{k}" not in store for k in range(1, week + 1)):
         # ដំណើរការដំបូង (ពាក់កណ្ដាលខែ) → សង់ប្រវត្តិសប្តាហ៍មុនៗពីការគណនាចាស់ (Result ពេញ Target សប្តាហ៍មុនមុន)
         acc = 0
         for k in range(1, week):
@@ -367,36 +367,20 @@ def plan_weeks(store, week, total, cum, weeks_count, hist=None):
 
 
 def weekly_team_table(items, month=None, week_only=None):
-    """ជួរ: No., Task, Total Target/Result/% ទាំងខែ, បន្ទាប់មក Target/Result/% សប្តាហ៍បច្ចុប្បន្នមួយ (សប្តាហ៍ចុងក្រោយបង្ហាញទាំង ៤)"""
-    m = f"M{month}" if month else "Month"
-    cur = min(max(int(week_only), 1), DEFAULT_WEEKS) if week_only else DEFAULT_WEEKS
-    weeks = list(range(1, DEFAULT_WEEKS + 1)) if cur == DEFAULT_WEEKS else [cur]
-
-    def fill(row, plan, w):
-        t, r = plan.get(w, (0, 0)) if plan else (0, 0)
-        ok = bool(plan and w in plan and t)
-        row[f"Week {w} Target"] = t if ok else "—"
-        row[f"Week {w} Result"] = r if ok else "—"
-        row[f"Week {w} %"] = f"{pct(r, t)}%" if ok else "—"
-        return (t, r) if ok else (0, 0)
-
-    rows, sums = [], {w: [0, 0] for w in weeks}
+    """តារាងងាយយល់: Task | Total Target | Done | Remaining | Week Target | Week Result | %"""
+    w = min(max(int(week_only or 1), 1), DEFAULT_WEEKS)
+    cm = f"Total Target M{month}" if month else "Total Target"
+    rows, sT, sD, sW, sR = [], 0, 0, 0, 0
     for index, item in enumerate(items, start=1):
         tot, cum = int(item.get("Total", 0) or 0), int(item.get("Cum", 0) or 0)
-        row = {"No.": index, "Task": item["Task"], f"Total Target {m}": tot, f"Total Result {m}": cum,
-               f"Total % {m}": f"{pct(cum, tot)}%" if tot else "—"}
-        for w in weeks:
-            t, r = fill(row, item.get("Plan"), w)
-            sums[w][0] += t; sums[w][1] += r
-        rows.append(row)
-    T = sum(int(i.get("Total", 0) or 0) for i in items); C = sum(int(i.get("Cum", 0) or 0) for i in items)
-    total = {"No.": "", "Task": "TOTAL", f"Total Target {m}": T, f"Total Result {m}": C, f"Total % {m}": f"{pct(C, T)}%" if T else "—"}
-    for w in weeks:
-        t, r = sums[w]
-        total[f"Week {w} Target"] = t if t else "—"
-        total[f"Week {w} Result"] = r if t else "—"
-        total[f"Week {w} %"] = f"{pct(r, t)}%" if t else "—"
-    rows.append(total)
+        t, r = (item.get("Plan") or {}).get(w, (0, 0))
+        rows.append({"No.": index, "Task": item["Task"], cm: tot, "Done": cum, "Remaining": max(tot - cum, 0),
+                     f"Week {w} Target": t if t else "—", f"Week {w} Result": r if t else "—",
+                     f"Week {w} %": f"{pct(r, t)}%" if t else "—"})
+        sT += tot; sD += cum; sW += t; sR += r if t else 0
+    rows.append({"No.": "", "Task": "TOTAL", cm: sT, "Done": sD, "Remaining": max(sT - sD, 0),
+                 f"Week {w} Target": sW if sW else "—", f"Week {w} Result": sR if sW else "—",
+                 f"Week {w} %": f"{pct(sR, sW)}%" if sW else "—"})
     return pd.DataFrame(rows).fillna("")
 
 
@@ -404,6 +388,11 @@ def current_week_team_progress(items, week_number):
     target = 0
     result = 0
     for item in items:
+        plan = (item.get("Plan") or {}).get(min(week_number, DEFAULT_WEEKS))
+        if plan:   # ប្រើលេខដូចក្នុងតារាង (Result មិនកាត់ត្រឹម Target)
+            target += plan[0]
+            result += plan[1]
+            continue
         data = item["Stats"].get(week_number)
         if data:
             target += data["Target"]
@@ -602,7 +591,9 @@ MASTER_REASON_TABS = [t.strip().upper() for t in (os.environ.get("MASTER_REASON_
 REASON_COLUMNS = ["Remark", "Remark ELE", "History Task"]
 # អ្នកកាន់ការងារដែលហៅ "អូន" (ក្រៅពីនេះហៅ "បង")។ ឧ. {"Teth"}
 # អ្នកកាន់ការងារដែលមិនត្រូវសួរសោះ (ទាំងឆាតផ្ទាល់ និងក្នុងក្រុម)
-ASK_FROM, ASK_TO = 9, 10      # សួរអ្នកកាន់ការងារចន្លោះម៉ោង 9:00–10:00
+ASK_FROM, ASK_TO = 9, 10
+WO_TAB = os.environ.get("WO_TAB", "CHA")   # Tab បញ្ជី WO
+WO_AM, WO_PM = 8 * 60 + 30, 17 * 60          # រំលឹក WO ព្រឹក 8:30 និងល្ងាច 17:00 (នាទីក្នុងថ្ងៃ)      # សួរអ្នកកាន់ការងារចន្លោះម៉ោង 9:00–10:00
 NEVER_ASK = {"Vo Hong Lam", "Oeun Samart", "Teth"}
 CALL_AS_ADIK = {"Trol Kea", "Ing Sokkhemarak", "Oum Sopheaktra"}
 JUNK_REASONS = {"-", ",", "0", "#n/a", "new target", "ok"}
@@ -920,6 +911,98 @@ def process_dm_replies(client, team_chat_mapping, warning_state, today):
     warning_state["_dm_pending"] = pending
 
 
+def collect_wo_open(task_codes):
+    """Site ដែល Approved ហើយ តែ WO (Tab CHA) មិនទាន់ Close → {team: [ {task, site, wo, status, ft, site_staff} ]}"""
+    out = {t: [] for t in VALID_TEAMS}
+    wo = fetch_csv(WO_TAB)
+    if wo is None or wo.empty or "7 Code" not in wo.columns or "Group task" not in wo.columns:
+        print(f"⚠️ Tab {WO_TAB}: រកជួរ 'Group task' / '7 Code' មិនឃើញ")
+        return out
+    stcol = "Check status close WO" if "Check status close WO" in wo.columns else "WO Status"
+    wo = wo.copy()
+    wo["_task"] = wo["Group task"].astype(str).str.strip().str.upper()
+    wo["_site"] = wo["7 Code"].astype(str).str.strip().str.upper()
+    wo["_st"] = wo[stcol].astype(str).str.strip().str.casefold()
+    wo = wo[(wo["_site"] != "") & (wo["_site"] != "NAN") & ~wo["_st"].isin(["closed", "close", "close over", "nan", ""])]
+    # "Close Over" = បានបិទហើយ (ហួសកំណត់) → មិនរំលឹក; Pending/FT assigned/FT completed... = មិនទាន់ Close
+    if wo.empty:
+        return out
+    site_staff = site_staff_map()
+    for code in task_codes:
+        sub = wo[wo["_task"] == str(code).strip().upper()]
+        if sub.empty:
+            continue
+        df = fetch_csv(code)
+        if df is None or df.empty or "Team" not in df.columns or "Site name" not in df.columns or "Result" not in df.columns:
+            continue
+        df = df.copy()
+        df["Team"] = df["Team"].astype(str).str.strip()
+        df = df[df["Team"].isin(VALID_TEAMS)]
+        isap = df["Result"].fillna("").astype(str).str.strip().str.casefold().eq("approved")
+        # Site ត្រូវ Approved គ្រប់ជួរ (Site មានច្រើនជួរ ប្រសិនបើមានជួរណាមិនទាន់ Approved → WO នៅបើកត្រឹមត្រូវ មិនរំលឹក)
+        df = df.assign(_ok=isap, _s=df["Site name"].astype(str).str.strip().str.upper())
+        full = df.groupby("_s")["_ok"].all()
+        info = {}
+        for _, r in df[df["_ok"]].iterrows():
+            site = _clean(r.get("Site name", ""))
+            if site and full.get(site.upper(), False):
+                info[site.upper()] = (r["Team"], site_staff.get(site.upper()) or (_clean(r.get("Name staff", "")) if "Name staff" in df.columns else ""))
+        for _, w in sub.iterrows():
+            hit = info.get(w["_site"])
+            if not hit:
+                continue
+            out[hit[0]].append({"task": code, "site": w["_site"], "wo": _clean(w.get("WO code", "")),
+                                "status": _clean(w.get(stcol, "")), "ft": _clean(w.get("FT", "")), "site_staff": hit[1]})
+    return out
+
+
+def build_wo_message(team, rows):
+    seen, items = set(), []
+    for r in rows:
+        k = (r["task"], r["site"], r["wo"])
+        if k in seen:
+            continue
+        seen.add(k)
+        items.append(r)
+    if not items:
+        return "", []
+    mention = TEAM_TELEGRAM_MENTIONS.get(team, TEAM_LEADERS.get(team, team))
+    leader = TEAM_LEADERS.get(team, team)
+    staff = [n for n in dict.fromkeys(i.get("site_staff") for i in items if i.get("site_staff")) if n.casefold() != leader.casefold()]
+    head = f"បង {mention} ({leader})" + (f" & {', '.join(staff)}" if staff else "")
+    lines = [head, "ការងារទាំងនេះ Approved ហើយ តែ WO មិនទាន់ Close សូមជួយ Close WO ផង"]
+    lines += [f"• {i['task']} {i['site']} — {i['wo']} ({i['status']})" for i in items]
+    return "\n".join(lines), items
+
+
+def run_wo_reminders(client, task_chat_ids, team_chat_mapping, warning_state, today, now):
+    """រំលឹក WO មិនទាន់ Close ថ្ងៃច័ន្ទ–សៅរ៍ ២ ដងក្នុងមួយថ្ងៃ: ព្រឹកចាប់ពី 8:30 (រត់ម៉ោងដំបូងបន្ទាប់ 8:30) និងល្ងាចចាប់ពី 17:00"""
+    day = today.isoformat()
+    st = warning_state.get("_wo_reminded")
+    if not isinstance(st, dict) or st.get("date") != day:
+        st = {"date": day, "done": []}
+    force = os.environ.get("FORCE_WO") == "1"
+    minutes = (now.hour * 60 + now.minute) if now is not None else 12 * 60
+    slot = "pm" if minutes >= WO_PM else ("am" if WO_AM <= minutes < 12 * 60 else None)
+    if not force and (today.weekday() == 6 or slot is None or slot in st["done"]):
+        warning_state["_wo_reminded"] = st
+        return
+    data = collect_wo_open(sorted(task_chat_ids))
+    for team in VALID_TEAMS:
+        chat = team_chat_mapping.get(team)
+        text, items = build_wo_message(team, data.get(team) or [])
+        if not text or not chat:
+            continue
+        try:
+            _send_long(client, chat, text)
+            print(f"📌 WO reminder → {team}: {len(items)}")
+        except Exception as e:
+            print(f"⚠️ WO reminder to {team} failed: {e}")
+    if slot:
+        st["done"].append(slot)
+    warning_state["_wo_reminded"] = st
+
+
 def run_hourly(client, task_chat_ids, team_chat_mapping, warning_state, today, now):
     day = today.isoformat()
     asked = warning_state.get("_asked", {})
@@ -998,6 +1081,10 @@ def run_hourly(client, task_chat_ids, team_chat_mapping, warning_state, today, n
                 reported.update(fresh)
             except Exception as e:
                 print(f"⚠️ Reason report to {team} failed: {e}")
+    try:
+        run_wo_reminders(client, task_chat_ids, team_chat_mapping, warning_state, today, now)   # ៥. Approved តែ WO មិនទាន់ Close
+    except Exception as e:
+        print(f"⚠️ WO reminder error: {e}")
     asked["keys"] = sorted(asked_today)
     warning_state["_asked"] = asked
     warning_state["_reported"] = rep
@@ -1208,6 +1295,17 @@ def main():
     if "_plan" in warning_state:
         warning_state["_plan"] = {k: v for k, v in warning_state["_plan"].items() if k == _k}
 
+    announce = (os.environ.get("ANNOUNCE") or "").strip()
+    if announce:   # ចុច Run workflow ហើយបំពេញប្រអប់ "announce" → ផ្ញើតែសារនេះចូល Main Group រួចបញ្ចប់ (មិនផ្ញើរបាយការណ៍)
+        with TelegramClient(StringSession(session_str), api_id, api_hash) as client:
+            try:
+                client.get_dialogs()
+            except Exception as e:
+                print(f"⚠️ get_dialogs failed: {e}")
+            client.send_message(MAIN_GROUP_ID, announce, parse_mode=None)
+            print("📣 Announcement sent to Main Group")
+        return
+
     if os.environ.get("EVENT_ACTION") == "daily-report-hourly":
         if not (HOURLY_FROM <= now.hour <= HOURLY_TO) and os.environ.get("FORCE_RESEND") != "1":
             print(f"ℹ️ Hourly: outside {HOURLY_FROM}-{HOURLY_TO}h (now {now:%H:%M}) — skip")
@@ -1393,7 +1491,7 @@ def main():
                 continue
 
             # បង្កើតនិងផ្ញើរូបភាពតារាង Weekly Report
-            title = f"របាយការណ៍ប្រចាំសប្តាហ៍ {team} — គោលដៅ លទ្ធផល និងភាគរយ តាមឈ្មោះ Site"
+            title = f"Weekly Report {team} — Week {min(current_week, DEFAULT_WEEKS)}"
             image_path = f"team_summary_{team}.png"
             dfi.export(style_detail_table(weekly_team_table(items, get_start_date(today).month, current_week), title).hide(axis="index"), image_path, max_rows=-1)
             send_with_caption(client, team_chat_id, image_path, f"{title}")
@@ -1470,6 +1568,25 @@ def main():
                     warning_state["_sat_report"] = today.isoformat()
             except Exception as e:
                 print(f"⚠️ Saturday report failed: {e}")
+
+        # ៥.១ ល្ងាចថ្ងៃអាទិត្យ: ធីមណាសប្តាហ៍នេះធ្វើក្រោម 80% ផ្ញើបញ្ជីចូល Main Group សម្រាប់ប្រជុំថ្ងៃច័ន្ទ
+        if ((today.weekday() == 6 and os.environ.get("EVENT_ACTION") == "daily-report-evening") or os.environ.get("FORCE_SUN_REPORT") == "1") \
+                and warning_state.get("_sun_report") != today.isoformat():
+            low = []
+            for team in VALID_TEAMS:
+                target, result, percent = current_week_team_progress(team_rows.get(team, []), current_week)
+                if target and percent < WARNING_THRESHOLD:
+                    low.append((team, result, target, percent))
+            try:
+                if low:
+                    lines = [f"📌 សរុបសប្តាហ៍ទី {min(current_week, DEFAULT_WEEKS)} — ធីមដែលធ្វើក្រោម {WARNING_THRESHOLD}%",
+                             "សូមត្រៀមពន្យល់មូលហេតុ និងវិធានការកែលម្អ ក្នុងកិច្ចប្រជុំថ្ងៃច័ន្ទ៖"]
+                    for team, result, target, percent in low:
+                        lines.append(f"• {team} {TEAM_TELEGRAM_MENTIONS.get(team, '')} ({TEAM_LEADERS[team]}): {result}/{target} ({percent}%)")
+                    client.send_message(MAIN_GROUP_ID, "\n".join(lines), parse_mode=None)
+                warning_state["_sun_report"] = today.isoformat()
+            except Exception as e:
+                print(f"⚠️ Sunday low-team report failed: {e}")
 
     # ៤. លិខិតព្រមានប្រចាំខែ: ថ្ងៃចុងខែ ក្រុមណាមានការងារមិនទាន់ចប់ក្នុងខែ រុញទៅខែក្រោយ ម្តងក្នុងមួយខែ
         # ផ្ញើតែនៅ Run ល្ងាច (ទិន្នន័យចុងថ្ងៃ) ថ្ងៃចុងខែ
