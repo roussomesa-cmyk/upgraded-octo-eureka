@@ -330,27 +330,64 @@ def pct(result, target):
     return int(result * 100 / target + 0.5) if target else 0
 
 
-def weekly_team_table(items):
-    rows = []
+def plan_weeks(store, week, total, cum, weeks_count):
+    """Target សប្តាហ៍: ចែកការងារដែលនៅសល់ (Total − អ្វីដែលធ្វើរួចមុនសប្តាហ៍នេះ) ស្មើៗលើសប្តាហ៍ដែលនៅសល់ (សល់ទុកសប្តាហ៍មុនៗ)
+       Result សប្តាហ៍ = ចំនួន Approved កើនឡើងក្នុងសប្តាហ៍នេះ (មិនកាត់ត្រឹម Target — លើស > 100% បាន ហើយលើសនោះកាត់បន្ថយ Target សប្តាហ៍បន្ទាប់)
+       store = {"b1":..,"t1":..,"b2":..} ត្រូវរក្សាក្នុង state ដើម្បីដឹងតម្លៃចាប់ផ្ដើមសប្តាហ៍។ ត្រឡប់ {week: (target, result)}"""
+    plan = {}
+    for w in range(1, week + 1):
+        if f"b{w}" not in store:
+            if w == 1:
+                store["b1"] = 0
+            elif w == week:
+                store[f"b{w}"] = cum   # ការរត់ដំបូងនៃសប្តាហ៍ថ្មី (ថ្ងៃច័ន្ទ) → កត់ចំនួន Approved ជាចំណុចចាប់ផ្ដើមសប្តាហ៍
+            else:
+                continue
+        base = store[f"b{w}"]
+        if f"t{w}" not in store:
+            left = weeks_count - w + 1
+            rem = max(total - base, 0)
+            if left <= 0:
+                store[f"t{w}"] = 0
+            else:
+                q, r = divmod(rem, left)
+                store[f"t{w}"] = q + (1 if r else 0)
+        nxt = store.get(f"b{w+1}") if w < week else None
+        end = nxt if nxt is not None else cum
+        plan[w] = (store[f"t{w}"], max(end - base, 0))
+    return plan
+
+
+def weekly_team_table(items, month=None, week_only=None):
+    """ជួរ: No., Task, Total Target/Result/% ទាំងខែ, បន្ទាប់មក Target/Result/% សប្តាហ៍បច្ចុប្បន្នមួយ (សប្តាហ៍ចុងក្រោយបង្ហាញទាំង ៤)"""
+    m = f"M{month}" if month else "Month"
+    cur = min(max(int(week_only), 1), DEFAULT_WEEKS) if week_only else DEFAULT_WEEKS
+    weeks = list(range(1, DEFAULT_WEEKS + 1)) if cur == DEFAULT_WEEKS else [cur]
+
+    def fill(row, plan, w):
+        t, r = plan.get(w, (0, 0)) if plan else (0, 0)
+        ok = bool(plan and w in plan and t)
+        row[f"Week {w} Target"] = t if ok else "—"
+        row[f"Week {w} Result"] = r if ok else "—"
+        row[f"Week {w} %"] = f"{pct(r, t)}%" if ok else "—"
+        return (t, r) if ok else (0, 0)
+
+    rows, sums = [], {w: [0, 0] for w in weeks}
     for index, item in enumerate(items, start=1):
-        row = {"No.": index, "Task": item["Task"]}
-        for week in range(1, DEFAULT_WEEKS + 1):
-            data = item["Stats"].get(week)
-            has = bool(data and data["Target"])   # សប្តាហ៍គ្មាន Site (Target 0) បង្ហាញ "—" មិនមែន 0%
-            row[f"Week {week} Target"] = data["Target"] if has else "—"   # Target រួមបញ្ចូលការងាររុញពីសប្តាហ៍មុនរួចហើយ
-            row[f"Week {week} Result"] = data["Result"] if has else "—"
-            row[f"Week {week} %"] = f"{data['Percent']}%" if has else "—"
+        tot, cum = int(item.get("Total", 0) or 0), int(item.get("Cum", 0) or 0)
+        row = {"No.": index, "Task": item["Task"], f"Total Target {m}": tot, f"Total Result {m}": cum,
+               f"Total % {m}": f"{pct(cum, tot)}%" if tot else "—"}
+        for w in weeks:
+            t, r = fill(row, item.get("Plan"), w)
+            sums[w][0] += t; sums[w][1] += r
         rows.append(row)
-
-    total = {"No.": "", "Task": "TOTAL"}
-    for week in range(1, DEFAULT_WEEKS + 1):
-        vals = [item["Stats"][week] for item in items if week in item["Stats"]]
-        target = sum(value["Target"] for value in vals)
-        result = sum(value["Result"] for value in vals)
-        total[f"Week {week} Target"] = target if target else "—"
-        total[f"Week {week} Result"] = result if target else "—"
-        total[f"Week {week} %"] = f"{pct(result, target)}%" if target else "—"
-
+    T = sum(int(i.get("Total", 0) or 0) for i in items); C = sum(int(i.get("Cum", 0) or 0) for i in items)
+    total = {"No.": "", "Task": "TOTAL", f"Total Target {m}": T, f"Total Result {m}": C, f"Total % {m}": f"{pct(C, T)}%" if T else "—"}
+    for w in weeks:
+        t, r = sums[w]
+        total[f"Week {w} Target"] = t if t else "—"
+        total[f"Week {w} Result"] = r if t else "—"
+        total[f"Week {w} %"] = f"{pct(r, t)}%" if t else "—"
     rows.append(total)
     return pd.DataFrame(rows).fillna("")
 
@@ -671,7 +708,7 @@ def collect_not_approved(task_codes):
         if "Result" in df.columns:
             _res = df["Result"].fillna("").astype(str).str.strip().str.lower()
             # យកតែ Site ដែលមាន Result ហើយមិនមែន Approved (Not Approved) — មិនយក Site មិនទាន់ធ្វើ (Result ទទេ)
-            df = df[(_res != "approved") & (~_res.isin(_EMPTY))]
+            df = df[_res.str.replace(r"[\s_-]+", " ", regex=True).eq("not approved")]   # ចាប់តែ "Not approved" មួយគត់
         mreasons = master_reasons(code)
         holder = holders.get(str(code).strip().upper(), "")
         for _, r in df.iterrows():
@@ -752,14 +789,16 @@ def build_reason_message(team, rows, reported):
 
 
 def _send_long(client, chat, text):
-    chunk = ""
+    """ផ្ញើអត្ថបទវែងជាច្រើនសារ; ត្រឡប់សារចុងក្រោយ (ប្រើសម្រាប់កត់ត្រា id)"""
+    chunk, last = "", None
     for line in text.split("\n"):
         if len(chunk) + len(line) + 1 > 3500:
-            client.send_message(chat, chunk, parse_mode=None)
+            last = client.send_message(chat, chunk, parse_mode=None)
             chunk = ""
         chunk += line + "\n"
     if chunk.strip():
-        client.send_message(chat, chunk, parse_mode=None)
+        last = client.send_message(chat, chunk, parse_mode=None)
+    return last
 
 
 def staff_handle(name):
@@ -784,6 +823,95 @@ def resolve_dm_target(client, handle):
     return res.users[0]
 
 
+def ocr_image(path):
+    """អានអក្សរក្នុងរូប (Tesseract ខ្មែរ+អង់គ្លេស)។ បើមិនមាន Tesseract → ត្រឡប់ទទេ (នៅតែផ្ញើរូបទៅក្រុម)"""
+    import shutil, subprocess
+    exe = shutil.which("tesseract")
+    if not exe:
+        return ""
+    for lang in ("khm+eng", "eng"):
+        try:
+            out = subprocess.run([exe, path, "stdout", "-l", lang], capture_output=True, text=True, timeout=90)
+            txt = re.sub(r"\n{3,}", "\n\n", out.stdout).strip()
+            if out.returncode == 0 and txt:
+                return txt[:700]
+        except Exception as e:
+            print(f"⚠️ OCR {lang} failed: {e}")
+    return ""
+
+
+def _relay_to_teams(client, pend, team_chat_mapping, holder_name, text, image_path=None):
+    """ផ្ញើចម្លើយរបស់អ្នកកាន់ការងារចូលក្រុម Team (ក្រុមតាម Site ដែលបានសួរ; បើអក្សរមានកូដ Site ជ្រើសតែ Site នោះ)"""
+    items = pend["items"]
+    codes = {m.upper() for m in re.findall(r"CHA[_A-Z0-9]*\d+|CHA_[A-Z0-9_]+", (text or "").upper())}
+    chosen = [i for i in items if i["site"].upper() in codes] or items
+    by_team = {}
+    for it in chosen:
+        by_team.setdefault(it["team"], []).append(it)
+    for team, its in by_team.items():
+        chat = team_chat_mapping.get(team)
+        if not chat:
+            continue
+        mention = TEAM_TELEGRAM_MENTIONS.get(team, TEAM_LEADERS.get(team, team))
+        leader = TEAM_LEADERS.get(team, team)
+        staff = [n for n in dict.fromkeys(i.get("site_staff") for i in its if i.get("site_staff")) if n.casefold() != leader.casefold()]
+        head = f"បង {mention} ({leader})" + (f" & {', '.join(staff)}" if staff else "")
+        lines = [head, "ជួយឆែកការងារនេះដែលខុស មិនទាន់ Approved"]
+        lines += [f"• {i['task']} {i['site']}" for i in its]
+        lines.append(f"មូលហេតុ (ពី {holder_name}): {_tidy_reason(text)[:600] if text else 'សូមមើលរូបភាព'}")
+        msg = "\n".join(lines)
+        try:
+            if image_path:
+                send_with_caption(client, chat, image_path, msg)
+            else:
+                _send_long(client, chat, msg)
+        except Exception as e:
+            print(f"⚠️ Relay to {team} failed: {e}")
+
+
+def process_dm_replies(client, team_chat_mapping, warning_state, today):
+    """មើលចម្លើយក្នុងឆាតផ្ទាល់ពីអ្នកកាន់ការងារដែលបានសួរ (ក្នុង 3 ថ្ងៃ) រួចយកប្រាប់ក្នុងក្រុម Team
+       អក្សរ → ផ្ញើអក្សរ | រូប (Screenshot) → អានអក្សរក្នុងរូប + ផ្ញើរូប | សំឡេង → សុំឱ្យសរសេរបញ្ជាក់"""
+    pending = warning_state.get("_dm_pending", {})
+    for handle, pend in list(pending.items()):
+        try:
+            age = (today - datetime.strptime(pend["date"], "%Y-%m-%d").date()).days
+        except Exception:
+            age = 99
+        if age > 3:
+            pending.pop(handle, None)
+            continue
+        try:
+            target = resolve_dm_target(client, handle)
+            msgs = client.get_messages(target, min_id=int(pend.get("last_id", 0)), limit=40)
+        except Exception as e:
+            print(f"⚠️ អានចម្លើយពី {handle} មិនបាន: {e}")
+            continue
+        for m in sorted(msgs, key=lambda x: x.id):
+            pend["last_id"] = max(int(pend.get("last_id", 0)), m.id)
+            if getattr(m, "out", False):
+                continue
+            text = (getattr(m, "message", "") or "").strip()
+            is_voice = bool(getattr(m, "voice", None) or getattr(m, "audio", None))
+            mime = getattr(getattr(m, "file", None), "mime_type", "") or ""
+            is_image = bool(getattr(m, "photo", None)) or mime.startswith("image/")
+            try:
+                if is_voice:
+                    client.send_message(target, "សូមសរសេរមូលហេតុជាអក្សរ ឬផ្ញើជារូប Screenshot ព្រោះមិនអាចស្តាប់សារសំឡេងបាន។", parse_mode=None)
+                elif is_image:
+                    path = client.download_media(m, file=f"reply_{m.id}.jpg")
+                    ocr = ocr_image(path) if path else ""
+                    body = "\n".join(x for x in (text, ocr) if x)
+                    _relay_to_teams(client, pend, team_chat_mapping, pend.get("name", handle), body, image_path=path)
+                    if path and os.path.exists(path):
+                        os.remove(path)
+                elif text:
+                    _relay_to_teams(client, pend, team_chat_mapping, pend.get("name", handle), text)
+            except Exception as e:
+                print(f"⚠️ ដំណើរការចម្លើយពី {handle} បរាជ័យ: {e}")
+    warning_state["_dm_pending"] = pending
+
+
 def run_hourly(client, task_chat_ids, team_chat_mapping, warning_state, today, now):
     day = today.isoformat()
     asked = warning_state.get("_asked", {})
@@ -795,6 +923,7 @@ def run_hourly(client, task_chat_ids, team_chat_mapping, warning_state, today, n
         rep = {"date": day, "items": {}}          # រាល់ថ្ងៃថ្មី ផ្ញើមូលហេតុដែលនៅសល់ម្តងទៀតម្តង
     reported = rep["items"]
 
+    process_dm_replies(client, team_chat_mapping, warning_state, today)    # ចម្លើយពីអ្នកកាន់ការងារ → ក្រុម Team
     data = collect_not_approved(sorted(task_chat_ids))                      # ១+២
     # ការសួរអ្នកកាន់ការងារ៖ ថ្ងៃច័ន្ទ–សៅរ៍ (មិនសួរថ្ងៃអាទិត្យ) ហើយម្តងក្នុងមួយថ្ងៃ (ជុំដំបូងនៃថ្ងៃ)
     # ម៉ោងសួរ៖ ចន្លោះ 9:00–10:00 (ម៉ោងកម្ពុជា) ប៉ុណ្ណោះ
@@ -830,8 +959,11 @@ def run_hourly(client, task_chat_ids, team_chat_mapping, warning_state, today, n
         lines = [f"សួស្តី{_call(info['name'])} {info['name']}"]
         lines += [f"ការងារ {r['task']} site {r['site']} ({team}) មានមូលហេតុអី ឬខុសអី បានមិន Approved?" for team, r, _ in info["items"]]
         try:
-            _send_long(client, resolve_dm_target(client, handle), "\n".join(lines))
+            sent = _send_long(client, resolve_dm_target(client, handle), "\n".join(lines))
             asked_today.update(k for _, _, k in info["items"])
+            warning_state.setdefault("_dm_pending", {})[handle] = {
+                "date": day, "name": info["name"], "last_id": getattr(sent, "id", 0) or 0,
+                "items": [{"team": t, "task": r["task"], "site": r["site"], "site_staff": r.get("site_staff", "")} for t, r, _ in info["items"]]}
             print(f"✉️ DM → {handle}: {len(info['items'])} Site")
         except Exception as e:
             print(f"⚠️ DM to {handle} failed: {e} — ទុកសួរក្នុងក្រុមវិញ")
@@ -1064,6 +1196,9 @@ def main():
     current_week = get_current_week(today)
     abs_week = (today.toordinal() - 1) // 7  # លេខសប្តាហ៍ពិត (ប្រើរាប់ជាប់គ្នាឆ្លងខែ)
     warning_state = load_warning_state()
+    _k = get_start_date(today).isoformat()
+    if "_plan" in warning_state:
+        warning_state["_plan"] = {k: v for k, v in warning_state["_plan"].items() if k == _k}
 
     if os.environ.get("EVENT_ACTION") == "daily-report-hourly":
         if not (HOURLY_FROM <= now.hour <= HOURLY_TO) and os.environ.get("FORCE_RESEND") != "1":
@@ -1206,7 +1341,11 @@ def main():
                             shortfall = w_target - w_result
                             w_percent = pct(w_result, w_target)
                             stats[week] = {"Target": w_target, "Result": w_result, "Percent": w_percent, "Carry": carry}
-                        team_rows[team].append({"Task": task_code, "Weeks": task_weeks(task_code), "Stats": stats})
+                        _total = sum(len(w) for w in groups.values())
+                        _cum = sum(approved_count(wdf) for wdf in groups.values())
+                        _store = warning_state.setdefault("_plan", {}).setdefault(get_start_date(today).isoformat(), {}).setdefault(team, {}).setdefault(str(task_code).strip(), {})
+                        _plan = plan_weeks(_store, min(current_week, DEFAULT_WEEKS), _total, _cum, task_weeks(task_code))
+                        team_rows[team].append({"Task": task_code, "Weeks": task_weeks(task_code), "Stats": stats, "Total": _total, "Cum": _cum, "Plan": _plan})
 
         # ១.១ Task ដែលមានការងារ Team តែគ្មាន Chat ID ក្នុង 'Team chat IDs' (មិនដែលត្រូវបានផ្ញើ)
         extra = [c.strip() for c in (os.environ.get("CHECK_UNMAPPED_TASKS") or ",".join(UNMAPPED_TASK_TABS)).split(",") if c.strip()]
@@ -1247,7 +1386,7 @@ def main():
             # បង្កើតនិងផ្ញើរូបភាពតារាង Weekly Report
             title = f"របាយការណ៍ប្រចាំសប្តាហ៍ {team} — គោលដៅ លទ្ធផល និងភាគរយ តាមឈ្មោះ Site"
             image_path = f"team_summary_{team}.png"
-            dfi.export(style_detail_table(weekly_team_table(items), title).hide(axis="index"), image_path, max_rows=-1)
+            dfi.export(style_detail_table(weekly_team_table(items, get_start_date(today).month, current_week), title).hide(axis="index"), image_path, max_rows=-1)
             send_with_caption(client, team_chat_id, image_path, f"{title}")
 
             # ពិនិត្យភាគរយសប្តាហ៍បច្ចុប្បន្ន ប្រសិនបើក្រោម 50% ផ្ញើសារ Tag រំលឹក
