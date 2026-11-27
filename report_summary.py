@@ -337,6 +337,8 @@ def plan_weeks(store, week, total, cum, weeks_count, hist=None):
     plan = {}
     if hist and week > 1 and any(f"b{k}" not in store for k in range(1, week + 1)):
         # ដំណើរការដំបូង (ពាក់កណ្ដាលខែ) → សង់ប្រវត្តិសប្តាហ៍មុនៗពីការគណនាចាស់ (Result ពេញ Target សប្តាហ៍មុនមុន)
+        for k in list(store):   # លុបតម្លៃចាស់/ខូច (ដូចជា Target សប្តាហ៍បច្ចុប្បន្ន) មុនសង់ឡើងវិញ
+            store.pop(k, None)
         acc = 0
         for k in range(1, week):
             t, r = hist.get(k, (0, 0))
@@ -1236,10 +1238,22 @@ def render_pdf(html, pdf_path):
     return pdf_path
 
 
+
+def clean_session(raw, name="TELEGRAM_SESSION"):
+    """លុបចន្លោះ/បន្ទាត់ថ្មី/សញ្ញាអញ្ញប្រកាស ដែលជាប់មកពីការចម្លង Session; បង្ហាញតែប្រវែង (មិនបង្ហាញតម្លៃ)"""
+    s = re.sub(r"[\s\"']+", "", raw or "")
+    print(f"ℹ️ {name}: ប្រវែង {len(s)} តួអក្សរ (ត្រូវប្រហែល 353)")
+    if len(s) < 300:
+        raise ValueError(f"{name} ខ្លីពេក ({len(s)}) — ចម្លង Session មិនគ្រប់ សូមបង្កើតថ្មី ហើយបិទភ្ជាប់ឱ្យពេញ")
+    return s
+
+
 def main():
     api_id_raw = os.environ.get("TELEGRAM_API_ID")
     api_hash = os.environ.get("TELEGRAM_API_HASH")
     session_str = os.environ.get("TELEGRAM_SESSION")
+    if session_str:
+        session_str = clean_session(session_str)
 
     if not api_id_raw or not api_hash or not session_str:
         raise ValueError("Telegram API credentials are missing in environment/secrets")
