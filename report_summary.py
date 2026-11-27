@@ -354,7 +354,7 @@ def plan_weeks(store, week, total, cum, weeks_count, hist=None):
             else:
                 continue
         base = store[f"b{w}"]
-        if f"t{w}" not in store:
+        if f"t{w}" not in store or w == week:   # សប្តាហ៍បច្ចុប្បន្ន គណនាឡើងវិញរាល់ដង (ដើម្បីតាម Total ថ្មី)
             left = weeks_count - w + 1
             rem = max(total - base, 0)
             if left <= 0:
