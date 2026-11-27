@@ -29,6 +29,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # ស្តារប្រវត្តិ Approved ដែលបានឃើញ (ចាប់តាមថ្ងៃនីមួយៗ)
+      - name: Restore team pass state
+        uses: actions/cache/restore@v4
+        with:
+          path: team_pass_state.json
+          key: team-pass-state-${{ github.run_id }}
+          restore-keys: |
+            team-pass-state-
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -57,3 +66,10 @@ jobs:
           else
             python team_pass_report.py ${{ github.event.inputs.mode }}
           fi
+
+      - name: Save team pass state
+        if: always() && hashFiles('team_pass_state.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: team_pass_state.json
+          key: team-pass-state-${{ github.run_id }}
