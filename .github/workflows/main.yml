@@ -19,7 +19,7 @@ on:
 
 # កុំឱ្យ ២ ដំណើរការរត់ព្រមគ្នា (បម្រុងនឹងរង់ចាំមេចប់ ហើយរំលងដោយខ្លួនឯង)
 concurrency:
-  group: daily-report
+  group: telegram-main   # Session ផ្ទាល់ខ្លួន: បូតតែមួយមិនរត់ពីរព្រមគ្នា
   cancel-in-progress: false
 
 jobs:
