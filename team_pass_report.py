@@ -369,10 +369,6 @@ def build_daily_reports(df, day):
                 table_rows.append({"ប្រភេទការងារ (Task Code)": task_label, "ចំនួន": len(g), "បញ្ជី Site": shown})
         df_daily = pd.DataFrame(table_rows)
         title_text = f"របាយការណ៍ប្រចាំថ្ងៃ {team} ({day.isoformat()})\nApproved ថ្ងៃនេះ៖ {len(rows)} ការងារ"
-        if wi >= 0:
-            quota = team_quota(df, team)[wi]
-            done_cnt = week_done(df, team, wi)
-            title_text += f" | {WEEKS[wi]['label']}៖ Approved {done_cnt}/{quota}"
 
         styler = df_daily.style.set_caption(title_text).set_table_styles([
             {"selector": "caption", "props": [("caption-side", "top"), ("font-size", "16px"), ("font-weight", "bold"),
