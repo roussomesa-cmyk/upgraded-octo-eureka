@@ -189,8 +189,34 @@ def load_log_dates(lo, hi):
     return out
 
 
-def collect_tasks(task_codes, lo, hi, log_dates=None):
+STATE_FILE = os.environ.get("TEAM_PASS_STATE", "team_pass_state.json")
+
+
+def load_seen(month_tag):
+    """ប្រវត្តិ Approved ដែលស្គ្រីបបានឃើញ: {key: 'YYYY-MM-DD' ឬ ''} ('' = Approved ចាស់ ដឹងកាលបរិច្ឆេទពីវិធីចាស់)"""
+    try:
+        import json
+        with open(STATE_FILE, encoding="utf-8") as fh:
+            st = json.load(fh)
+        if st.get("month") != month_tag:   # ខែថ្មី (Sheet ប្ដូរទិន្នន័យ) → ចាប់ផ្តើមប្រវត្តិថ្មី មិនយកប្រវត្តិខែមុន
+            return None
+        return st.get("seen", {})
+    except Exception:
+        return None
+
+
+def save_seen(seen, month_tag):
+    import json
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as fh:
+            json.dump({"month": month_tag, "seen": seen}, fh, ensure_ascii=False)
+    except Exception as e:
+        print(f"⚠️ រក្សាទុក {STATE_FILE} មិនបាន: {e}")
+
+
+def collect_tasks(task_codes, lo, hi, log_dates=None, seen=None, today=None):
     frames = []
+    current_keys = set()
     for code in task_codes:
         df = fetch_csv(code)
         if df is None or df.empty or "Team" not in df.columns or "Site name" not in df.columns:
@@ -225,6 +251,24 @@ def collect_tasks(task_codes, lo, hi, log_dates=None):
                     if dt is None:
                         dt = log_dt
             final_dates.append(dt)
+        if seen is not None and today is not None:
+            # ចាប់តាមថ្ងៃនីមួយៗ: Site ដែល Approved ដែលស្គ្រីបមិនធ្លាប់ឃើញ → រាប់ជា Approved ថ្ងៃដែលឃើញដំបូង (មិនពឹងលើ Last date record)
+            counter = {}
+            for i, (site, team, appr) in enumerate(zip(sites, d["Team"].values, approved.values)):
+                if not appr:
+                    continue
+                n = counter.get((site, team), 0) + 1
+                counter[(site, team)] = n
+                key = f"{code}|{site}|{team}#{n}"
+                current_keys.add(key)
+                if key not in seen:
+                    seen[key] = today.isoformat()
+                    final_dates[i] = today
+                elif seen[key]:
+                    try:
+                        final_dates[i] = date.fromisoformat(seen[key])
+                    except ValueError:
+                        pass
         frames.append(pd.DataFrame({
             "Task": code,
             "Team": d["Team"].values,
@@ -232,6 +276,9 @@ def collect_tasks(task_codes, lo, hi, log_dates=None):
             "Approved": approved.values,
             "Date": final_dates,
         }))
+    if seen is not None:
+        for k in [k for k in seen if k not in current_keys]:
+            seen.pop(k, None)   # លែង Approved → លុប (បើ Approved ម្តងទៀត រាប់ជាថ្មី)
     if not frames:
         return pd.DataFrame(columns=["Task", "Team", "Site", "Approved", "Date"])
     return pd.concat(frames, ignore_index=True)
@@ -494,7 +541,21 @@ def main():
         sys.exit("⚠️ រកមិនឃើញ Sheet→ChatID ក្នុង Tab 'Team chat IDs'")
 
     log_dates = load_log_dates(month_start, hi)
-    df = collect_tasks(list(dict.fromkeys(task_chat)), month_start, hi, log_dates)
+    month_tag = f"{report_month:%Y-%m}"
+    seen = load_seen(month_tag)
+    first_run = seen is None
+    if first_run:
+        seen = {}
+    df = collect_tasks(list(dict.fromkeys(task_chat)), month_start, hi, log_dates, seen if not first_run else None, today)
+    if first_run:   # លើកដំបូង: កត់ Approved ទាំងអស់ជា "ចាស់" (កាលបរិច្ឆេទតាមវិធីចាស់) ចាប់ថ្ងៃបន្ទាប់ទើបចាប់តាមថ្ងៃ
+        seen = {}
+        counter = {}
+        for _, r in df[df["Approved"]].iterrows():
+            n = counter.get((r["Task"], r["Site"], r["Team"]), 0) + 1
+            counter[(r["Task"], r["Site"], r["Team"])] = n
+            seen[f"{r['Task']}|{r['Site']}|{r['Team']}#{n}"] = r["Date"].isoformat() if isinstance(r["Date"], date) else ""
+    if not args.dry_run:
+        save_seen(seen, month_tag)
     if df.empty:
         print("⚠️ មិនបានទាញទិន្នន័យ Task ណាមួយទេ; សូមពិនិត្យ Spreadsheet ID, ឈ្មោះ Tab និងការចូលមើល Sheet")
 
