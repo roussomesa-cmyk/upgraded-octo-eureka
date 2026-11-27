@@ -412,6 +412,16 @@ def build_final(df):
     return out, flags, title, caption, team_texts
 
 
+
+def clean_session(raw, name="TELEGRAM_SESSION"):
+    """លុបចន្លោះ/បន្ទាត់ថ្មី/សញ្ញាអញ្ញប្រកាស ដែលជាប់មកពីការចម្លង Session; បង្ហាញតែប្រវែង (មិនបង្ហាញតម្លៃ)"""
+    s = re.sub(r"[\s\"']+", "", raw or "")
+    print(f"ℹ️ {name}: ប្រវែង {len(s)} តួអក្សរ (ត្រូវប្រហែល 353)")
+    if len(s) < 300:
+        raise ValueError(f"{name} ខ្លីពេក ({len(s)}) — ចម្លង Session មិនគ្រប់ សូមបង្កើតថ្មី ហើយបិទភ្ជាប់ឱ្យពេញ")
+    return s
+
+
 class Sender:
     def __init__(self, dry_run, test_chat):
         self.dry, self.test_chat, self.client = dry_run, test_chat, None
@@ -425,7 +435,7 @@ class Sender:
                                      os.environ.get("TELEGRAM_SESSION"))
         if not (api_id and api_hash and session):
             raise ValueError("ខ្វះ TELEGRAM_API_ID / TELEGRAM_API_HASH / TELEGRAM_SESSION")
-        self.client = TelegramClient(StringSession(session), int(api_id), api_hash).__enter__()
+        self.client = TelegramClient(StringSession(clean_session(session, "TELEGRAM_SESSION")), int(api_id), api_hash).__enter__()
         return self
 
     def __exit__(self, *exc):
