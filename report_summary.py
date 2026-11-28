@@ -1049,33 +1049,39 @@ def build_late_message(team, tasks, days_left):
 
 
 def run_late_reminders(client, task_chat_ids, team_chat_mapping, warning_state, today, now):
-    """ចាប់ពីថ្ងៃទី 25 ដល់ចុងខែ: ផ្ញើក្រុម Team ការងារមិនទាន់ធ្វើ ២ ដង/ថ្ងៃ (ច័ន្ទ–សៅរ៍)"""
+    """ចាប់ពីថ្ងៃទី 25 ដល់ចុងខែ: ផ្ញើក្រុម Team ការងារមិនទាន់ធ្វើ ២ ដង/ថ្ងៃ (ច័ន្ទ–សៅរ៍)
+       ក្នុងម៉ោងនីមួយៗ (ព្រឹក/រសៀល) ធីមមួយទទួលសារម្តង ហើយផ្ញើថែមតែពេលមាន Task ថ្មីបន្ថែម (ដូចជា Tab ដែលអានបានថ្មី)"""
     force = os.environ.get("FORCE_LATE") == "1"
     if not force and (today.day < LATE_FROM_DAY or today.weekday() == 6):
         return
     day = today.isoformat()
     st = warning_state.get("_late_reminded")
     if not isinstance(st, dict) or st.get("date") != day:
-        st = {"date": day, "done": []}
+        st = {"date": day, "done": [], "sent": {}}
     minutes = (now.hour * 60 + now.minute) if now is not None else 12 * 60
     slot = "pm" if minutes >= LATE_PM else ("am" if LATE_AM <= minutes < 12 * 60 else None)
-    if not force and (slot is None or slot in st["done"]):
+    if not force and slot is None:
         warning_state["_late_reminded"] = st
         return
+    sent = st.setdefault("sent", {}).setdefault(slot or "force", {})     # {team: [task,...] ដែលបានផ្ញើរួច}
     last_day = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
     days_left = (last_day - today).days + 1
     data = collect_pending(sorted(task_chat_ids))
     for team in VALID_TEAMS:
         chat = team_chat_mapping.get(team)
-        text = build_late_message(team, data.get(team) or {}, days_left)
+        tasks = data.get(team) or {}
+        text = build_late_message(team, tasks, days_left)
         if not text or not chat:
             continue
+        if not force and not (set(tasks) - set(sent.get(team, []))):
+            continue                                   # ផ្ញើរួចក្នុងម៉ោងនេះ ហើយគ្មាន Task ថ្មី
         try:
             _send_long(client, chat, text)
-            print(f"⏰ Late reminder → {team}")
+            sent[team] = sorted(set(sent.get(team, [])) | set(tasks))
+            print(f"⏰ Late reminder → {team}: {sorted(tasks)}")
         except Exception as e:
             print(f"⚠️ Late reminder to {team} failed: {e}")
-    if slot:
+    if slot and slot not in st["done"]:
         st["done"].append(slot)
     warning_state["_late_reminded"] = st
 
