@@ -101,8 +101,8 @@ def normalize_team(name):
 _RAW_CSV = {}  # cache អត្ថបទ CSV ដើម្បីកុំទាញ Sheet ធំ (A2 មាន ~50,000 ជួរ) ពីរដង
 
 
-def fetch_csv(sheet_name_or_gid, spreadsheet_id=None):
-    url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id or SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name_or_gid}"
+def fetch_csv(sheet_name_or_gid, spreadsheet_id=None, _h0=False):
+    url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id or SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name_or_gid}" + ("&headers=0" if _h0 else "")
     headers = {"User-Agent": "Mozilla/5.0"}
     res = None
     # Sheet ធំ (A2 ~50,000 ជួរ) ត្រូវការពេលលើស 15 វិនាទី → timeout វែង + ព្យាយាមម្តងទៀត
@@ -141,6 +141,10 @@ def fetch_csv(sheet_name_or_gid, spreadsheet_id=None):
             return None
 
         df.columns = df.columns.astype(str).str.strip()
+        # Google ពេលខ្លះបញ្ចូលជួរទិន្នន័យទី១-៣ ចូលក្នុងក្បាលតារាង (ឧ. "Team CHA-T02 CHA-T06") → អានម្តងទៀតដោយ headers=0
+        if not _h0 and any(str(c).startswith(("Team ", "Site name ")) for c in df.columns):
+            print(f"ℹ️ Sheet '{sheet_name_or_gid}': ក្បាលតារាងច្រឡំ → អានម្តងទៀត (headers=0)")
+            return fetch_csv(sheet_name_or_gid, spreadsheet_id, _h0=True)
 
         rename_dict = {}
         for col in df.columns:
@@ -1015,10 +1019,12 @@ def collect_pending(task_codes):
     for code in task_codes:
         df = fetch_csv(code)
         if df is None or df.empty or "Team" not in df.columns or "Site name" not in df.columns or "Result" not in df.columns:
+            print(f"[late] {code}: អានមិនបាន/ខ្វះជួរ", None if df is None else list(df.columns)[:12])
             continue
         df = df.copy()
         df["Team"] = df["Team"].astype(str).str.strip()
         df = df[df["Team"].isin(VALID_TEAMS)]
+        print(f"[late] {code}: rows={len(df)}")
         done = df["Result"].fillna("").astype(str).str.strip().str.casefold().eq("approved")
         for _, r in df[~done].iterrows():
             site = _clean(r.get("Site name", ""))
@@ -1391,6 +1397,15 @@ def main():
                 print(f"⚠️ get_dialogs failed: {e}")
             client.send_message(MAIN_GROUP_ID, announce, parse_mode=None)
             print("📣 Announcement sent to Main Group")
+        return
+
+    if os.environ.get("FORCE_LATE") == "1":   # Run workflow ដោយដៃ + ដាក់ force_late = 1 → ផ្ញើរំលឹកចុងខែភ្លាម (មិនរត់របាយការណ៍)
+        with TelegramClient(StringSession(session_str), api_id, api_hash) as client:
+            try:
+                client.get_dialogs()
+            except Exception as e:
+                print(f"⚠️ get_dialogs failed: {e}")
+            run_late_reminders(client, task_chat_ids, team_chat_mapping, warning_state, today, now)
         return
 
     if os.environ.get("EVENT_ACTION") == "daily-report-hourly":
