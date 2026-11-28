@@ -1005,6 +1005,75 @@ def run_wo_reminders(client, task_chat_ids, team_chat_mapping, warning_state, to
     warning_state["_wo_reminded"] = st
 
 
+LATE_FROM_DAY = 25                                    # ចាប់ពីថ្ងៃទី 25 ឡើងទៅ រំលឹកការងារមិនទាន់ធ្វើ
+LATE_AM, LATE_PM = 10 * 60, 16 * 60                   # ២ ដងក្នុងមួយថ្ងៃ: 10:00 និង 16:00
+
+
+def collect_pending(task_codes):
+    """{team: {task: [site,...]}} សម្រាប់ Site ដែលមិនទាន់ Approved (Result ទទេ ឬ Not approved)"""
+    out = {t: {} for t in VALID_TEAMS}
+    for code in task_codes:
+        df = fetch_csv(code)
+        if df is None or df.empty or "Team" not in df.columns or "Site name" not in df.columns or "Result" not in df.columns:
+            continue
+        df = df.copy()
+        df["Team"] = df["Team"].astype(str).str.strip()
+        df = df[df["Team"].isin(VALID_TEAMS)]
+        done = df["Result"].fillna("").astype(str).str.strip().str.casefold().eq("approved")
+        for _, r in df[~done].iterrows():
+            site = _clean(r.get("Site name", ""))
+            if site:
+                out[r["Team"]].setdefault(str(code).strip(), []).append(site)
+    return out
+
+
+def build_late_message(team, tasks, days_left):
+    if not tasks:
+        return ""
+    mention = TEAM_TELEGRAM_MENTIONS.get(team, TEAM_LEADERS.get(team, team))
+    total = sum(len(v) for v in tasks.values())
+    lines = [f"⏰ បង {mention} ({TEAM_LEADERS.get(team, team)})",
+             f"ជិតចុងខែហើយ (នៅសល់ {days_left} ថ្ងៃ) ការងារមិនទាន់ធ្វើ {total} Site៖"]
+    for task in sorted(tasks):
+        sites = list(dict.fromkeys(tasks[task]))
+        shown = ", ".join(sites[:8]) + (f" ... +{len(sites) - 8}" if len(sites) > 8 else "")
+        lines.append(f"• {task} — {len(sites)} Site ({shown})")
+    lines.append("សូមជួយបន្ថែមល្បឿន ឱ្យបានមុនចុងខែ។")
+    return "\n".join(lines)
+
+
+def run_late_reminders(client, task_chat_ids, team_chat_mapping, warning_state, today, now):
+    """ចាប់ពីថ្ងៃទី 25 ដល់ចុងខែ: ផ្ញើក្រុម Team ការងារមិនទាន់ធ្វើ ២ ដង/ថ្ងៃ (ច័ន្ទ–សៅរ៍)"""
+    force = os.environ.get("FORCE_LATE") == "1"
+    if not force and (today.day < LATE_FROM_DAY or today.weekday() == 6):
+        return
+    day = today.isoformat()
+    st = warning_state.get("_late_reminded")
+    if not isinstance(st, dict) or st.get("date") != day:
+        st = {"date": day, "done": []}
+    minutes = (now.hour * 60 + now.minute) if now is not None else 12 * 60
+    slot = "pm" if minutes >= LATE_PM else ("am" if LATE_AM <= minutes < 12 * 60 else None)
+    if not force and (slot is None or slot in st["done"]):
+        warning_state["_late_reminded"] = st
+        return
+    last_day = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    days_left = (last_day - today).days + 1
+    data = collect_pending(sorted(task_chat_ids))
+    for team in VALID_TEAMS:
+        chat = team_chat_mapping.get(team)
+        text = build_late_message(team, data.get(team) or {}, days_left)
+        if not text or not chat:
+            continue
+        try:
+            _send_long(client, chat, text)
+            print(f"⏰ Late reminder → {team}")
+        except Exception as e:
+            print(f"⚠️ Late reminder to {team} failed: {e}")
+    if slot:
+        st["done"].append(slot)
+    warning_state["_late_reminded"] = st
+
+
 def run_hourly(client, task_chat_ids, team_chat_mapping, warning_state, today, now):
     day = today.isoformat()
     asked = warning_state.get("_asked", {})
@@ -1087,6 +1156,10 @@ def run_hourly(client, task_chat_ids, team_chat_mapping, warning_state, today, n
         run_wo_reminders(client, task_chat_ids, team_chat_mapping, warning_state, today, now)   # ៥. Approved តែ WO មិនទាន់ Close
     except Exception as e:
         print(f"⚠️ WO reminder error: {e}")
+    try:
+        run_late_reminders(client, task_chat_ids, team_chat_mapping, warning_state, today, now)   # ៦. ចាប់ពីថ្ងៃទី 25 ការងារមិនទាន់ធ្វើ
+    except Exception as e:
+        print(f"⚠️ Late reminder error: {e}")
     asked["keys"] = sorted(asked_today)
     warning_state["_asked"] = asked
     warning_state["_reported"] = rep
