@@ -31,6 +31,14 @@ TEAM_LEADERS = {
     "CHA-T07": "Sam Sophal",
 }
 
+NO_BONG_TEAMS = {"CHA-T05", "CHA-T06"}   # Mut Chanthy, Rit Borin អាយុប្រហែលគ្នា → មិនហៅ "បង"
+
+
+def _bong(team):
+    """"បង " (មានដកឃ្លា) ឬទទេ សម្រាប់ Leader ដែលមិនហៅបង"""
+    return "" if team in NO_BONG_TEAMS else "បង "
+
+
 TEAM_TELEGRAM_MENTIONS = {
     "CHA-T01": "@an_vanny9",
     "CHA-T02": "@Chanthan_team2",
@@ -229,6 +237,27 @@ def style_pending_table(df, title):
         styler = styler.set_properties(subset=long_cols, **{
             "white-space": "normal !important", "word-break": "break-word", "max-width": "260px", "min-width": "120px"})
     return styler
+
+
+def build_task_summary_df(df_all):
+    """តារាងសង្ខេបតាមធីម (Target Site / Approved / Not Approved / % / Remain) — ជួរទី 0 = សរុប (ក្រហម)"""
+    d = df_all.copy()
+    d["Team"] = d["Team"].astype(str).str.strip()
+    res = d["Result"].fillna("").astype(str).str.replace(r"[\s_-]+", " ", regex=True).str.strip().str.casefold() if "Result" in d.columns else pd.Series([""] * len(d), index=d.index)
+    rows, T = [], [0, 0, 0]
+    for team in VALID_TEAMS:
+        m = d["Team"] == team
+        n = int(m.sum())
+        if not n:
+            continue
+        ap = int((res[m] == "approved").sum())
+        na = int((res[m] == "not approved").sum())
+        rows.append([len(rows) + 1, team, n, ap, na, f"{round(ap * 100 / n)}%", n - ap, ""])
+        T[0] += n; T[1] += ap; T[2] += na
+    total = ["", "", T[0], T[1], T[2], f"{round(T[1] * 100 / T[0]) if T[0] else 0}%", T[0] - T[1], ""]
+    cols = pd.MultiIndex.from_tuples([("", "No"), ("", "Team"), ("", "Target Site"), ("Result", "Approved"),
+                                      ("Result", "Not Approved"), ("", "%"), ("", "Remain"), ("", "Remark")])
+    return pd.DataFrame([total] + rows, columns=cols)
 
 
 def style_task_summary(df, title):
@@ -784,7 +813,7 @@ def build_reason_message(team, rows, reported):
     blocks = []
     for reason, rs in groups.items():
         staff = [n for n in dict.fromkeys(x["site_staff"] for x in rs if x.get("site_staff")) if n.casefold() != leader.casefold()]
-        head = f"បង {mention} ({leader})" + (f" & {', '.join(staff)}" if staff else "")
+        head = f"{_bong(team)}{mention} ({leader})" + (f" & {', '.join(staff)}" if staff else "")
         many = len(staff) > 1          # បុគ្គលិកច្រើននាក់ → ដាក់ឈ្មោះក្រោយ Site នីមួយៗ
         lines = [head, "ជួយឆែកការងារនេះដែលខុស មិនទាន់ Approved"]
         lines += [f"• {x['task']} {x['site']}" + (f" ({x['site_staff']})" if many and x.get("site_staff") else "") for x in rs]
@@ -860,7 +889,7 @@ def _relay_to_teams(client, pend, team_chat_mapping, holder_name, text, image_pa
         mention = TEAM_TELEGRAM_MENTIONS.get(team, TEAM_LEADERS.get(team, team))
         leader = TEAM_LEADERS.get(team, team)
         staff = [n for n in dict.fromkeys(i.get("site_staff") for i in its if i.get("site_staff")) if n.casefold() != leader.casefold()]
-        head = f"បង {mention} ({leader})" + (f" & {', '.join(staff)}" if staff else "")
+        head = f"{_bong(team)}{mention} ({leader})" + (f" & {', '.join(staff)}" if staff else "")
         lines = [head, "ជួយឆែកការងារនេះដែលខុស មិនទាន់ Approved"]
         lines += [f"• {i['task']} {i['site']}" for i in its]
         lines.append(f"មូលហេតុ (ពី {holder_name}): {_tidy_reason(text)[:600] if text else 'សូមមើលរូបភាព'}")
@@ -975,7 +1004,7 @@ def build_wo_message(team, rows):
     mention = TEAM_TELEGRAM_MENTIONS.get(team, TEAM_LEADERS.get(team, team))
     leader = TEAM_LEADERS.get(team, team)
     staff = [n for n in dict.fromkeys(i.get("site_staff") for i in items if i.get("site_staff")) if n.casefold() != leader.casefold()]
-    head = f"បង {mention} ({leader})" + (f" & {', '.join(staff)}" if staff else "")
+    head = f"{_bong(team)}{mention} ({leader})" + (f" & {', '.join(staff)}" if staff else "")
     lines = [head, "ការងារទាំងនេះ Approved ហើយ តែ WO មិនទាន់ Close សូមជួយ Close WO ផង"]
     lines += [f"• {i['task']} {i['site']} — {i['wo']} ({i['status']})" for i in items]
     return "\n".join(lines), items
@@ -1038,13 +1067,13 @@ def build_late_message(team, tasks, days_left):
         return ""
     mention = TEAM_TELEGRAM_MENTIONS.get(team, TEAM_LEADERS.get(team, team))
     total = sum(len(v) for v in tasks.values())
-    lines = [f"⏰ បង {mention} ({TEAM_LEADERS.get(team, team)})",
+    lines = [f"{_bong(team)}{mention} ({TEAM_LEADERS.get(team, team)})",
              f"ជិតចុងខែហើយ (នៅសល់ {days_left} ថ្ងៃ) ការងារមិនទាន់ធ្វើ {total} Site៖"]
     for task in sorted(tasks):
         sites = list(dict.fromkeys(tasks[task]))
         shown = ", ".join(sites[:8]) + (f" ... +{len(sites) - 8}" if len(sites) > 8 else "")
         lines.append(f"• {task} — {len(sites)} Site ({shown})")
-    lines.append("សូមជួយបន្ថែមល្បឿន ឱ្យបានមុនចុងខែ។")
+    lines.append("ជួយធ្វើការងារទាំងនេះអោយហើយផង")
     return "\n".join(lines)
 
 
@@ -1508,26 +1537,72 @@ def main():
                 df_detail = df_detail.fillna("").replace(to_replace=r"^(?i:nan|none|#n/a|n/a)$", value="", regex=True)
 
                 # ផ្ញើការងារមិនទាន់ Approved ទៅកាន់គ្រុប Task នីមួយៗ (Task Chat ID)
+                _ad = warning_state.get("_all_done_sent")
+                if not isinstance(_ad, dict) or _ad.get("month") != get_start_date(today).isoformat():
+                    _ad = {"month": get_start_date(today).isoformat(), "keys": []}   # ខែថ្មី = ចាប់ផ្តើមកត់ត្រាថ្មី
+                warning_state["_all_done_sent"] = _ad
+                newly_done = []
                 for team in VALID_TEAMS:
                     df_single_team = df_detail[df_detail["Team"] == team].copy()
                     if not df_single_team.empty:
+                        # ល្ងាច (All data)៖ អក្សរក្រោមរូបចាប់តែ Site មិនទាន់ Approved; ធីមដែល Approved គ្រប់ ផ្ញើតែម្តងគត់
+                        df_pend, _all_done = df_single_team, False
+                        if not is_scheduled and "Result" in df_single_team.columns:
+                            _ok = df_single_team["Result"].astype(str).str.strip().str.lower() == "approved"
+                            df_pend, _all_done = df_single_team[~_ok], bool(_ok.all())
+                        _dkey = f"{task_code}|{team}"
+                        if not is_scheduled:
+                            if _all_done:
+                                # Approved គ្រប់ → មិនផ្ញើតារាងលម្អិតទេ; ផ្ញើតារាងសង្ខេប (តាមធីម) ម្តងគត់ ក្រោយចប់ការវិល
+                                if _dkey not in _ad["keys"] or os.environ.get("FORCE_RESEND") == "1":
+                                    newly_done.append((team, _dkey))
+                                continue
+                            if _dkey in _ad["keys"]:
+                                _ad["keys"].remove(_dkey)                   # មានការងារថ្មីមិនទាន់ធ្វើ → ចាប់ផ្តើមផ្ញើវិញ
                         styled_detail = style_pending_table(df_single_team, f"{task_title} ({team})" + ("" if is_scheduled else " — All data"))
                         img_path = f"detail_{task_code}_{team}.png"
                         dfi.export(styled_detail.hide(axis="index"), img_path, max_rows=-1)
 
-                        pending_text = build_pending_list_text(df_single_team, team, task_title, show_serial=(str(task_code).strip().upper() == "A2"))
+                        pending_text = build_pending_list_text(df_pend, team, task_title, show_serial=(str(task_code).strip().upper() == "A2")) if not df_pend.empty else ""
                         full_caption = (f"ការងារក្រុមមិនទាន់ធ្វើ {team} ({task_title}) - {shift_name}" if is_scheduled
                                         else f"ទិន្នន័យការងារទាំងអស់ {team} ({task_title}){(' - ' + shift_name) if shift_name else ''}")
                         if pending_text:
                             full_caption += f"\n\n{pending_text}"
+                        elif not is_scheduled and _all_done:
+                            full_caption += "\n\n✅ Approved គ្រប់ហើយ"
 
                         for chat_id in chat_ids:
                             if can_reach(chat_id) and send_with_caption(client, chat_id, img_path, full_caption):
                                 info["sent"] += 1
+                                if not is_scheduled and _all_done and _dkey not in _ad["keys"]:
+                                    _ad["keys"].append(_dkey)
                             else:
                                 info["failed"] += 1
                         if os.path.exists(img_path):
                             os.remove(img_path)
+
+                if newly_done:
+                    # តារាងសង្ខេបតាមធីម (ដូចគំរូ) សម្រាប់ធីមដែល Approved គ្រប់ហើយ — ផ្ញើម្តងគត់
+                    try:
+                        sum_img = f"summary_{task_code}.png"
+                        sum_df = build_task_summary_df(df_detail)
+                        dfi.export(style_task_summary(sum_df, task_title).hide(axis="index"), sum_img, max_rows=-1)
+                        done_names = ", ".join(t for t, _ in newly_done)
+                        cap = f"{task_title} — ✅ Approved គ្រប់ហើយ: {done_names}"
+                        ok_sent = False
+                        for chat_id in chat_ids:
+                            if can_reach(chat_id) and send_with_caption(client, chat_id, sum_img, cap):
+                                info["sent"] += 1; ok_sent = True
+                            else:
+                                info["failed"] += 1
+                        if ok_sent:
+                            for _t, _k in newly_done:
+                                if _k not in _ad["keys"]:
+                                    _ad["keys"].append(_k)
+                        if os.path.exists(sum_img):
+                            os.remove(sum_img)
+                    except Exception as e:
+                        print(f"⚠️ Summary table {task_code} failed: {e}")
 
             # ប្រមូលទិន្នន័យដើម្បីគណនាសប្តាហ៍ (Weekly Split)
             for team in VALID_TEAMS:
@@ -1611,9 +1686,9 @@ def main():
             if target and percent < REMINDER_THRESHOLD:
                 reminder_msg = (
                     f"⚠️ **រំលឹកប្រចាំសប្តាហ៍**\n"
-                    f"Dear bong {mention} ({team} — {TEAM_LEADERS[team]})\n"
+                    f"Dear {'bong ' if _bong(team) else ''}{mention} ({team} — {TEAM_LEADERS[team]})\n"
                     f"លទ្ធផលសប្តាហ៍នេះ៖ {result}/{target} ({percent}%)\n"
-                    f"🔻 ភាគរយនៅក្រោម {REMINDER_THRESHOLD}% សូមបងបញ្ជាក់ពីមូលហេតុ និងវិធានការកែលម្អជាបន្ទាន់។"
+                    f"🔻 ភាគរយនៅក្រោម {REMINDER_THRESHOLD}% សូម{'បង' if _bong(team) else ''}បញ្ជាក់ពីមូលហេតុ និងវិធានការកែលម្អជាបន្ទាន់។"
                 )
                 try:
                     client.send_message(team_chat_id, reminder_msg)
