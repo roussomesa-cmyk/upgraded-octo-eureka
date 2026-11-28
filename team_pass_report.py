@@ -43,8 +43,8 @@ MAX_SITES_LISTED = 8
 NA_VALUES = ("", "nan", "none", "#n/a", "n/a")
 
 
-def fetch_csv(sheet_name_or_gid):
-    url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name_or_gid}"
+def fetch_csv(sheet_name_or_gid, _h0=False):
+    url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name_or_gid}" + ("&headers=0" if _h0 else "")
     try:
         res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
     except requests.RequestException as e:
@@ -70,6 +70,9 @@ def fetch_csv(sheet_name_or_gid):
         return None
     df = df.dropna(how="all")
     df.columns = df.columns.astype(str).str.strip()
+    if not _h0 and any(str(c).startswith(("Team ", "Site name ")) for c in df.columns):
+        print(f"ℹ️ Sheet '{sheet_name_or_gid}': ក្បាលតារាងច្រឡំ → អានម្តងទៀត (headers=0)")
+        return fetch_csv(sheet_name_or_gid, _h0=True)
 
     rename_dict = {}
     for col in df.columns:
@@ -351,7 +354,6 @@ def export_image(styler, path):
 
 
 def build_daily_reports(df, day):
-    wi = week_index(day)
     reports = {}
     for team in VALID_TEAMS:
         rows = df[(df["Team"] == team) & df["Approved"] & (df["Date"] == day)]
